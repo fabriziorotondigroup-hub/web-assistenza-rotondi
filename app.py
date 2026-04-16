@@ -1,860 +1,670 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Web App Assistenza Tecnica — Rotondi Group Roma
-Per clienti senza Telegram
-"""
-
-from flask import Flask, request, jsonify, render_template_string, send_from_directory
-import os, sqlite3, asyncio, smtplib, uuid
+from flask import Flask, request, jsonify, render_template_string
+import os, sqlite3, uuid, requests, smtplib
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import requests
 
 app = Flask(__name__)
 
 BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
 TECNICI_GROUP_ID = os.environ.get("TECNICI_GROUP_ID", "")
 BACKOFFICE_IDS   = os.environ.get("BACKOFFICE_IDS", "")
-SMTP_HOST        = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT        = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER        = os.environ.get("SMTP_USER", "")
-SMTP_PASS        = os.environ.get("SMTP_PASS", "")
-SMTP_FROM        = os.environ.get("SMTP_FROM", "assistenza@garanzierotondi.it")
-
-DB_PATH = "web_assistenza.db"
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", "assistenza@garanzierotondi.it")
+DB_PATH   = "web_assistenza.db"
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS richieste_web (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                protocollo  TEXT UNIQUE,
-                nome        TEXT,
-                indirizzo   TEXT,
-                telefono    TEXT,
-                email       TEXT,
-                marca       TEXT,
-                modello     TEXT,
-                seriale     TEXT,
-                problema    TEXT,
-                lingua      TEXT,
-                stato       TEXT DEFAULT 'aperta',
-                tecnico     TEXT,
-                fascia      TEXT,
-                data        TEXT,
-                msg_id      INTEGER
-            )
-        """)
-        conn.commit()
+    with sqlite3.connect(DB_PATH) as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS richieste_web (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            protocollo TEXT UNIQUE, nome TEXT, indirizzo TEXT,
+            telefono TEXT, email TEXT, marca TEXT, modello TEXT,
+            seriale TEXT, problema TEXT, lingua TEXT,
+            stato TEXT DEFAULT 'aperta', data TEXT)""")
+        c.commit()
 
 def genera_protocollo():
     return "RG" + datetime.now().strftime("%y%m%d") + str(uuid.uuid4())[:4].upper()
 
-def invia_email(to_email, subject, html_body):
-    if not SMTP_USER or not SMTP_PASS:
-        print(f"Email non configurata — skipping: {to_email}")
-        return False
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = SMTP_FROM
-        msg["To"]      = to_email
-        msg.attach(MIMEText(html_body, "html"))
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_FROM, to_email, msg.as_string())
-        return True
-    except Exception as e:
-        print(f"Email error: {e}")
-        return False
-
-def invia_telegram(text, reply_markup=None):
-    if not BOT_TOKEN or not TECNICI_GROUP_ID:
-        return None
+def invia_telegram(text, keyboard=None):
+    if not BOT_TOKEN or not TECNICI_GROUP_ID: return None
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TECNICI_GROUP_ID, "text": text, "parse_mode": "Markdown"}
-    if reply_markup:
-        import json
-        payload["reply_markup"] = json.dumps(reply_markup)
+    p = {"chat_id": TECNICI_GROUP_ID, "text": text, "parse_mode": "Markdown"}
+    if keyboard:
+        import json; p["reply_markup"] = json.dumps(keyboard)
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        data = r.json()
-        return data.get("result", {}).get("message_id")
+        r = requests.post(url, json=p, timeout=10)
+        return r.json().get("result", {}).get("message_id")
     except Exception as e:
-        print(f"Telegram error: {e}")
-        return None
+        print(f"TG error: {e}"); return None
 
 def invia_telegram_bo(text):
-    if not BOT_TOKEN or not BACKOFFICE_IDS:
-        return
-    for bo_id in BACKOFFICE_IDS.split(","):
+    if not BOT_TOKEN or not BACKOFFICE_IDS: return
+    for bo in BACKOFFICE_IDS.split(","):
         try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            requests.post(url, json={"chat_id": bo_id.strip(), "text": text, "parse_mode": "Markdown"}, timeout=10)
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": bo.strip(), "text": text, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# ═══════════════════════════════════════════════════════
-# HTML INTERFACE
-# ═══════════════════════════════════════════════════════
+def invia_email(to, subject, html):
+    if not SMTP_USER or not SMTP_PASS: return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject; msg["From"] = SMTP_FROM; msg["To"] = to
+        msg.attach(MIMEText(html, "html"))
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+            s.starttls(); s.login(SMTP_USER, SMTP_PASS)
+            s.sendmail(SMTP_FROM, to, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"Email error: {e}"); return False
 
-HTML = '''<!DOCTYPE html>
-<html lang="it">
+HTML = r"""<!DOCTYPE html>
+<html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Assistenza Tecnica — Rotondi Group Roma</title>
-<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
-:root {
-  --dark: #0d0d14;
-  --dark2: #14141f;
-  --card: #1a1a2e;
-  --border: rgba(255,255,255,0.08);
-  --gold: #c9a84c;
-  --gold2: #e8c96d;
-  --text: #e8e6e0;
-  --muted: rgba(232,230,224,0.5);
-  --green: #2ea043;
-  --red: #f85149;
-  --blue: #58a6ff;
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background:var(--dark); color:var(--text); font-family:'DM Sans',sans-serif; min-height:100vh; }
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--dark:#0d0d14;--card:#1a1a2e;--border:rgba(255,255,255,0.09);--gold:#c9a84c;--gold2:#e8c96d;--text:#e8e6e0;--muted:rgba(232,230,224,0.55);--green:#2ea043;--red:#f85149}
+body{background:var(--dark);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh}
+a{color:var(--gold)}
 
 /* HEADER */
-.header { background:var(--dark2); border-bottom:1px solid var(--border); padding:16px 24px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:100; }
-.logo { font-family:'Bebas Neue',sans-serif; font-size:22px; letter-spacing:2px; color:#fff; }
-.logo span { color:var(--gold); }
-.lang-btns { display:flex; gap:6px; }
-.lang-btn { background:rgba(255,255,255,0.05); border:1px solid var(--border); color:var(--muted); padding:6px 10px; border-radius:6px; cursor:pointer; font-size:13px; transition:all .2s; }
-.lang-btn:hover, .lang-btn.active { background:rgba(201,168,76,0.15); border-color:var(--gold); color:var(--gold); }
+.hdr{background:#14141f;border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;backdrop-filter:blur(10px)}
+.logo{font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:2px;color:#fff}
+.logo span{color:var(--gold)}
+.langs{display:flex;gap:5px}
+.lb{background:rgba(255,255,255,0.05);border:1px solid var(--border);color:var(--muted);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:13px;font-family:'DM Sans',sans-serif;transition:.2s}
+.lb:hover,.lb.on{background:rgba(201,168,76,.15);border-color:var(--gold);color:var(--gold)}
 
 /* MAIN */
-.main { max-width:680px; margin:0 auto; padding:32px 20px 60px; }
+.wrap{max-width:660px;margin:0 auto;padding:32px 20px 80px}
 
-/* STEP INDICATOR */
-.steps-bar { display:flex; align-items:center; gap:0; margin-bottom:40px; }
-.step-dot { width:32px; height:32px; border-radius:50%; border:2px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; color:var(--muted); transition:all .3s; flex-shrink:0; }
-.step-dot.active { border-color:var(--gold); color:var(--gold); background:rgba(201,168,76,0.1); }
-.step-dot.done { border-color:var(--green); color:var(--green); background:rgba(46,160,67,0.1); }
-.step-line { flex:1; height:1px; background:var(--border); transition:background .3s; }
-.step-line.done { background:var(--green); }
+/* STEPS */
+.stepbar{display:flex;align-items:center;margin-bottom:36px;display:none}
+.sdot{width:30px;height:30px;border-radius:50%;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:var(--muted);flex-shrink:0;transition:.3s}
+.sdot.on{border-color:var(--gold);color:var(--gold);background:rgba(201,168,76,.1)}
+.sdot.done{border-color:var(--green);color:var(--green);background:rgba(46,160,67,.1)}
+.sline{flex:1;height:1px;background:var(--border);transition:.3s}
+.sline.done{background:var(--green)}
 
 /* SCREENS */
-.screen { display:none; animation:fadeIn .4s ease; }
-.screen.active { display:block; }
-@keyframes fadeIn { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+.sc{display:none}
+.sc.on{display:block;animation:fi .35s ease}
+@keyframes fi{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 
 /* CONDIZIONI */
-.cond-header { text-align:center; margin-bottom:32px; }
-.cond-header h1 { font-family:'Bebas Neue',sans-serif; font-size:36px; letter-spacing:2px; line-height:1.1; }
-.cond-header h1 span { color:var(--gold); }
-.cond-header p { color:var(--muted); margin-top:8px; font-size:15px; }
+.ch{text-align:center;margin-bottom:28px}
+.ch h1{font-family:'Bebas Neue',sans-serif;font-size:38px;letter-spacing:2px;line-height:1}
+.ch h1 em{color:var(--gold);font-style:normal}
+.ch p{color:var(--muted);margin-top:8px;font-size:15px}
 
-.cond-box { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:16px; }
-.cond-box h3 { font-size:13px; letter-spacing:2px; text-transform:uppercase; color:var(--gold); margin-bottom:16px; font-weight:500; }
-.cond-row { display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-bottom:1px solid var(--border); }
-.cond-row:last-child { border-bottom:none; }
-.cond-icon { font-size:18px; flex-shrink:0; margin-top:1px; }
-.cond-text { font-size:14px; color:var(--text); line-height:1.6; }
-.cond-text strong { color:#fff; font-weight:600; }
+.cbox{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px;margin-bottom:14px}
+.ctitle{font-size:12px;letter-spacing:2px;text-transform:uppercase;color:var(--gold);margin-bottom:16px;font-weight:500}
+.crow{display:flex;gap:14px;padding:11px 0;border-bottom:1px solid var(--border)}
+.crow:last-child{border-bottom:none}
+.cico{font-size:18px;flex-shrink:0;width:26px;text-align:center;margin-top:1px}
+.ctxt{font-size:14px;color:var(--text);line-height:1.65}
+.ctxt b{color:#fff}
 
-.tariffe-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px; }
-.tariffa-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; }
-.tariffa-card h4 { font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:var(--gold); margin-bottom:12px; }
-.tariffa-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px; }
-.tariffa-row:last-child { border-bottom:none; }
-.tariffa-row .val { color:#fff; font-weight:500; }
+.tgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+.tcard{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px}
+.tcard h4{font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold);margin-bottom:12px}
+.trow{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
+.trow:last-child{border-bottom:none}
+.trow .tv{color:#fff;font-weight:500}
 
-.freelance-note { background:rgba(201,168,76,0.06); border:1px solid rgba(201,168,76,0.2); border-radius:8px; padding:14px 16px; font-size:13px; color:var(--muted); line-height:1.6; margin-bottom:20px; }
-.freelance-note strong { color:var(--gold); }
+.fnote{background:rgba(201,168,76,.06);border:1px solid rgba(201,168,76,.2);border-radius:8px;padding:14px 16px;font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:18px}
+.fnote b{color:var(--gold)}
 
-.btn-group { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-.btn-accept { background:var(--green); color:#fff; border:none; padding:16px; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer; transition:all .2s; }
-.btn-accept:hover { background:#3aba4f; transform:translateY(-1px); }
-.btn-decline { background:rgba(248,81,73,0.1); color:var(--red); border:1px solid rgba(248,81,73,0.3); padding:16px; border-radius:10px; font-size:15px; font-weight:500; cursor:pointer; transition:all .2s; }
-.btn-decline:hover { background:rgba(248,81,73,0.2); }
+.btnrow{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.bacc{background:var(--green);color:#fff;border:none;padding:16px;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:.2s}
+.bacc:hover{background:#38b34a;transform:translateY(-1px)}
+.bdec{background:rgba(248,81,73,.1);color:var(--red);border:1px solid rgba(248,81,73,.3);padding:16px;border-radius:10px;font-size:15px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif;transition:.2s}
+.bdec:hover{background:rgba(248,81,73,.2)}
 
 /* FORM */
-.form-title { margin-bottom:28px; }
-.form-title h2 { font-family:'Bebas Neue',sans-serif; font-size:28px; letter-spacing:1px; }
-.form-title p { color:var(--muted); margin-top:4px; font-size:14px; }
-.form-step-label { font-size:11px; letter-spacing:2px; text-transform:uppercase; color:var(--gold); margin-bottom:20px; display:flex; align-items:center; gap:8px; }
-.form-step-label::after { content:''; flex:1; height:1px; background:var(--border); }
+.ftitle{margin-bottom:26px}
+.ftitle h2{font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:1px}
+.ftitle p{color:var(--muted);margin-top:4px;font-size:14px}
+.fstep{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--gold);margin-bottom:18px;display:flex;align-items:center;gap:8px}
+.fstep::after{content:'';flex:1;height:1px;background:var(--border)}
 
-.field { margin-bottom:20px; }
-.field label { display:block; font-size:13px; color:var(--muted); margin-bottom:8px; font-weight:500; }
-.field input, .field textarea, .field select { width:100%; background:var(--card); border:1px solid var(--border); color:var(--text); padding:13px 16px; border-radius:8px; font-size:15px; font-family:'DM Sans',sans-serif; transition:border-color .2s; outline:none; }
-.field input:focus, .field textarea:focus { border-color:var(--gold); }
-.field textarea { min-height:100px; resize:vertical; }
-.field .hint { font-size:12px; color:var(--muted); margin-top:6px; }
+.fld{margin-bottom:18px}
+.fld label{display:block;font-size:13px;color:var(--muted);margin-bottom:7px;font-weight:500}
+.fld input,.fld textarea,.fld select{width:100%;background:var(--card);border:1px solid var(--border);color:var(--text);padding:13px 15px;border-radius:8px;font-size:15px;font-family:'DM Sans',sans-serif;outline:none;transition:.2s}
+.fld input:focus,.fld textarea:focus{border-color:var(--gold)}
+.fld textarea{min-height:100px;resize:vertical}
+.fld .hint{font-size:12px;color:var(--muted);margin-top:5px}
+.fg2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 
-.field-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-
-.btn-next { width:100%; background:var(--gold); color:var(--dark); border:none; padding:16px; border-radius:10px; font-size:16px; font-weight:700; cursor:pointer; transition:all .2s; margin-top:8px; font-family:'DM Sans',sans-serif; }
-.btn-next:hover { background:var(--gold2); transform:translateY(-1px); }
-.btn-back { background:transparent; color:var(--muted); border:1px solid var(--border); padding:12px 20px; border-radius:8px; font-size:14px; cursor:pointer; margin-bottom:16px; transition:all .2s; font-family:'DM Sans',sans-serif; }
-.btn-back:hover { color:var(--text); border-color:rgba(255,255,255,0.2); }
+.bnext{width:100%;background:var(--gold);color:var(--dark);border:none;padding:16px;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;margin-top:6px;transition:.2s}
+.bnext:hover{background:var(--gold2);transform:translateY(-1px)}
+.bback{background:transparent;color:var(--muted);border:1px solid var(--border);padding:11px 18px;border-radius:8px;font-size:14px;cursor:pointer;margin-bottom:16px;font-family:'DM Sans',sans-serif;transition:.2s}
+.bback:hover{color:var(--text);border-color:rgba(255,255,255,.2)}
 
 /* RIEPILOGO */
-.riepilogo-card { background:var(--card); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-bottom:20px; }
-.riepilogo-row { display:flex; gap:16px; padding:14px 20px; border-bottom:1px solid var(--border); }
-.riepilogo-row:last-child { border-bottom:none; }
-.riepilogo-label { font-size:12px; color:var(--muted); min-width:100px; flex-shrink:0; padding-top:2px; }
-.riepilogo-val { font-size:14px; color:var(--text); line-height:1.5; }
-
-/* SUCCESSO */
-.success-screen { text-align:center; padding:40px 0; }
-.success-icon { font-size:64px; margin-bottom:20px; }
-.success-screen h2 { font-family:'Bebas Neue',sans-serif; font-size:32px; letter-spacing:2px; color:var(--gold); margin-bottom:12px; }
-.success-screen p { color:var(--muted); font-size:15px; line-height:1.7; max-width:400px; margin:0 auto 20px; }
-.protocollo-box { background:var(--card); border:1px solid var(--gold); border-radius:10px; padding:20px; display:inline-block; margin:20px auto; }
-.protocollo-box .label { font-size:11px; letter-spacing:2px; text-transform:uppercase; color:var(--gold); margin-bottom:8px; }
-.protocollo-box .code { font-size:28px; font-weight:700; color:#fff; letter-spacing:4px; font-family:'Bebas Neue',sans-serif; }
-
-/* DECLINED */
-.declined-screen { text-align:center; padding:40px 0; }
-.declined-screen h2 { font-family:'Bebas Neue',sans-serif; font-size:28px; letter-spacing:1px; margin-bottom:12px; }
-.declined-screen p { color:var(--muted); font-size:15px; line-height:1.7; }
-.btn-restart { background:var(--card); border:1px solid var(--border); color:var(--text); padding:12px 28px; border-radius:8px; cursor:pointer; font-size:14px; margin-top:20px; font-family:'DM Sans',sans-serif; transition:all .2s; }
-.btn-restart:hover { border-color:var(--gold); color:var(--gold); }
+.rcard{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:18px}
+.rrow{display:flex;gap:14px;padding:13px 18px;border-bottom:1px solid var(--border)}
+.rrow:last-child{border-bottom:none}
+.rlbl{font-size:12px;color:var(--muted);min-width:90px;flex-shrink:0;padding-top:2px}
+.rval{font-size:14px;line-height:1.5}
 
 /* LOADING */
-.loading { display:none; text-align:center; padding:20px; }
-.spinner { width:32px; height:32px; border:3px solid var(--border); border-top-color:var(--gold); border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
-@keyframes spin { to{transform:rotate(360deg)} }
+.ldr{display:none;text-align:center;padding:20px}
+.spin{width:30px;height:30px;border:3px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 10px}
+@keyframes sp{to{transform:rotate(360deg)}}
 
-@media(max-width:500px) {
-  .tariffe-grid { grid-template-columns:1fr; }
-  .field-grid { grid-template-columns:1fr; }
-  .btn-group { grid-template-columns:1fr; }
-  .lang-btns { gap:4px; }
-  .lang-btn { padding:5px 7px; font-size:12px; }
-}
+/* SUCCESS */
+.succ{text-align:center;padding:40px 0}
+.succ h2{font-family:'Bebas Neue',sans-serif;font-size:32px;letter-spacing:2px;color:var(--gold);margin:16px 0 10px}
+.succ p{color:var(--muted);font-size:15px;line-height:1.7;max-width:380px;margin:0 auto 16px}
+.pbox{background:var(--card);border:1px solid var(--gold);border-radius:10px;padding:18px 28px;display:inline-block;margin:16px auto}
+.plbl{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--gold);margin-bottom:6px}
+.pcode{font-size:30px;font-weight:700;color:#fff;letter-spacing:4px;font-family:'Bebas Neue',sans-serif}
+
+/* DECLINED */
+.dec{text-align:center;padding:40px 0}
+.dec h2{font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:1px;margin-bottom:10px}
+.dec p{color:var(--muted);font-size:15px;line-height:1.7}
+.brest{background:var(--card);border:1px solid var(--border);color:var(--text);padding:12px 28px;border-radius:8px;cursor:pointer;font-size:14px;margin-top:18px;font-family:'DM Sans',sans-serif;transition:.2s}
+.brest:hover{border-color:var(--gold);color:var(--gold)}
+
+@media(max-width:500px){.tgrid,.fg2,.btnrow{grid-template-columns:1fr}.langs{gap:3px}.lb{padding:5px 7px;font-size:11px}}
 </style>
 </head>
 <body>
-
-<div class="header">
+<div class="hdr">
   <div class="logo">ROTONDI <span>GROUP</span> ROMA</div>
-  <div class="lang-btns">
-    <button class="lang-btn active" onclick="setLang('it')">🇮🇹</button>
-    <button class="lang-btn" onclick="setLang('en')">🇬🇧</button>
-    <button class="lang-btn" onclick="setLang('bn')">🇧🇩</button>
-    <button class="lang-btn" onclick="setLang('zh')">🇨🇳</button>
-    <button class="lang-btn" onclick="setLang('ar')">🇸🇦</button>
+  <div class="langs">
+    <button class="lb on" onclick="setL('it',this)">🇮🇹</button>
+    <button class="lb" onclick="setL('en',this)">🇬🇧</button>
+    <button class="lb" onclick="setL('bn',this)">🇧🇩</button>
+    <button class="lb" onclick="setL('zh',this)">🇨🇳</button>
+    <button class="lb" onclick="setL('ar',this)">🇸🇦</button>
   </div>
 </div>
 
-<div class="main">
-  <!-- Step bar -->
-  <div class="steps-bar" id="stepsBar" style="display:none">
-    <div class="step-dot active" id="sd1">1</div>
-    <div class="step-line" id="sl1"></div>
-    <div class="step-dot" id="sd2">2</div>
-    <div class="step-line" id="sl2"></div>
-    <div class="step-dot" id="sd3">3</div>
-    <div class="step-line" id="sl3"></div>
-    <div class="step-dot" id="sd4">4</div>
+<div class="wrap">
+  <div class="stepbar" id="stepbar">
+    <div class="sdot on" id="d1">1</div><div class="sline" id="l1"></div>
+    <div class="sdot" id="d2">2</div><div class="sline" id="l2"></div>
+    <div class="sdot" id="d3">3</div><div class="sline" id="l3"></div>
+    <div class="sdot" id="d4">4</div>
   </div>
 
-  <!-- SCREEN 0: CONDIZIONI -->
-  <div class="screen active" id="screen0">
-    <div class="cond-header">
-      <h1 id="c-title">ASSISTENZA<br><span>TECNICA</span></h1>
-      <p id="c-sub">Rotondi Group Roma — Leggi le condizioni prima di procedere</p>
+  <!-- S0: CONDIZIONI -->
+  <div class="sc on" id="s0">
+    <div class="ch">
+      <h1 id="t-title">ASSISTENZA<br><em>TECNICA</em></h1>
+      <p id="t-sub">Rotondi Group Roma — Leggi le condizioni prima di procedere</p>
     </div>
-
-    <div class="cond-box">
-      <h3 id="c-info-title">Informativa sul servizio</h3>
-      <div class="cond-row">
-        <div class="cond-icon" style="color:#f0ad4e;font-size:22px;min-width:28px">!</div>
-        <div class="cond-text" id="c-paid"></div>
-      </div>
-      <div class="cond-row">
-        <div class="cond-icon" style="color:#2ea043;font-size:22px;min-width:28px">&#10003;</div>
-        <div class="cond-text" id="c-warranty"></div>
-      </div>
-      <div class="cond-row">
-        <div class="cond-icon" style="color:#c9a84c;font-size:22px;min-width:28px">&#8364;</div>
-        <div class="cond-text" id="c-charge"></div>
-      </div>
+    <div class="cbox">
+      <div class="ctitle" id="t-ctitle">Informativa sul servizio</div>
+      <div class="crow"><div class="cico" style="color:#f0b429">⚠</div><div class="ctxt" id="t-c1">L'assistenza tecnica è un <b>servizio a pagamento</b>, anche se il prodotto è <b>in garanzia</b>.</div></div>
+      <div class="crow"><div class="cico" style="color:#2ea043">✓</div><div class="ctxt" id="t-c2">In garanzia vengono riconosciute solo le <b>parti di ricambio difettose</b> (sostituzione senza costo).</div></div>
+      <div class="crow"><div class="cico" style="color:#c9a84c">€</div><div class="ctxt" id="t-c3"><b>Sempre a carico del cliente:</b> Manodopera · Spostamento tecnico · Costo chiamata</div></div>
     </div>
-
-    <div class="tariffe-grid">
-      <div class="tariffa-card">
-        <h4 id="c-zone1">Zona di Roma</h4>
-        <div class="tariffa-row"><span id="c-r1l">Uscita + 1 ora</span><span class="val">€ 80,00 + IVA</span></div>
-        <div class="tariffa-row"><span id="c-r2l">Ore successive</span><span class="val">€ 40,00/h + IVA</span></div>
+    <div class="tgrid">
+      <div class="tcard">
+        <h4 id="t-z1">Zona di Roma</h4>
+        <div class="trow"><span id="t-r1l">Uscita + 1 ora lavoro</span><span class="tv">€ 80,00 + IVA</span></div>
+        <div class="trow"><span id="t-r2l">Ore successive</span><span class="tv">€ 40,00/h + IVA</span></div>
       </div>
-      <div class="tariffa-card">
-        <h4 id="c-zone2">Fuori Roma</h4>
-        <div class="tariffa-row"><span id="c-r3l">Trasferta</span><span class="val">€ 0,70/km + IVA</span></div>
-        <div class="tariffa-row"><span id="c-r4l">Ore viaggio</span><span class="val">€ 32,00/h + IVA</span></div>
-        <div class="tariffa-row"><span id="c-r5l">Ore lavoro</span><span class="val">€ 40,00/h + IVA</span></div>
+      <div class="tcard">
+        <h4 id="t-z2">Fuori Roma</h4>
+        <div class="trow"><span id="t-r3l">Trasferta km</span><span class="tv">€ 0,70/km + IVA</span></div>
+        <div class="trow"><span id="t-r4l">Ore viaggio</span><span class="tv">€ 32,00/h + IVA</span></div>
+        <div class="trow"><span id="t-r5l">Ore lavoro</span><span class="tv">€ 40,00/h + IVA</span></div>
       </div>
     </div>
-
-    <div class="freelance-note" id="c-freelance"></div>
-
-    <div class="btn-group">
-      <button class="btn-accept" onclick="acceptConditions()" id="c-accept">✅ Accetto</button>
-      <button class="btn-decline" onclick="declineConditions()" id="c-decline">❌ Rifiuto</button>
+    <div class="fnote" id="t-frl">I tecnici che operano con Rotondi Group sono <b>liberi professionisti freelance indipendenti</b>, selezionati dalla nostra azienda. Non sono dipendenti Rotondi Group.</div>
+    <div class="btnrow">
+      <button class="bacc" onclick="go(1)" id="t-acc">✓ Accetto le condizioni</button>
+      <button class="bdec" onclick="go(5)" id="t-dec">✗ Rifiuto</button>
     </div>
   </div>
 
-  <!-- SCREEN 1: DATI PERSONALI -->
-  <div class="screen" id="screen1">
-    <button class="btn-back" onclick="goTo(0)" id="f-back">← Indietro</button>
-    <div class="form-title">
-      <h2 id="f1-title">Dati personali</h2>
-      <p id="f1-sub">Inserisci i tuoi dati di contatto</p>
+  <!-- S1: DATI PERSONALI -->
+  <div class="sc" id="s1">
+    <button class="bback" onclick="go(0)" id="t-bk">← Indietro</button>
+    <div class="ftitle"><h2 id="t-f1h">Dati personali</h2><p id="t-f1p">Inserisci i tuoi dati di contatto</p></div>
+    <div class="fstep" id="t-f1s">Passo 1 di 3</div>
+    <div class="fld"><label id="t-ln">Nome e cognome *</label><input id="v-nome" type="text" placeholder="Mario Rossi"></div>
+    <div class="fld"><label id="t-li">Indirizzo completo *</label><input id="v-ind" type="text" placeholder="Via Roma 10, Roma"><div class="hint" id="t-hi">Via, numero civico e città</div></div>
+    <div class="fg2">
+      <div class="fld"><label id="t-lt">Telefono *</label><input id="v-tel" type="tel" placeholder="+39 333 1234567"></div>
+      <div class="fld"><label id="t-le">Email *</label><input id="v-email" type="email" placeholder="mario@email.com"><div class="hint" id="t-he">Per ricevere la conferma</div></div>
     </div>
-    <div class="form-step-label" id="f1-step">Passo 1 di 3</div>
-    <div class="field">
-      <label id="l-nome">Nome e cognome *</label>
-      <input type="text" id="inp-nome" placeholder="Mario Rossi">
-    </div>
-    <div class="field">
-      <label id="l-indirizzo">Indirizzo completo *</label>
-      <input type="text" id="inp-indirizzo" placeholder="Via Roma 10, Roma">
-      <div class="hint" id="h-indirizzo">Via, numero civico e città</div>
-    </div>
-    <div class="field-grid">
-      <div class="field">
-        <label id="l-telefono">Telefono *</label>
-        <input type="tel" id="inp-telefono" placeholder="+39 333 1234567">
-      </div>
-      <div class="field">
-        <label id="l-email">Email *</label>
-        <input type="email" id="inp-email" placeholder="mario@email.com">
-        <div class="hint" id="h-email">Per ricevere la conferma</div>
-      </div>
-    </div>
-    <button class="btn-next" onclick="nextStep1()" id="f1-next">Continua →</button>
+    <button class="bnext" onclick="step1()" id="t-f1n">Continua →</button>
   </div>
 
-  <!-- SCREEN 2: DATI MACCHINA -->
-  <div class="screen" id="screen2">
-    <button class="btn-back" onclick="goTo(1)" id="f-back2">← Indietro</button>
-    <div class="form-title">
-      <h2 id="f2-title">Dati macchina</h2>
-      <p id="f2-sub">Informazioni sul macchinario</p>
+  <!-- S2: DATI MACCHINA -->
+  <div class="sc" id="s2">
+    <button class="bback" onclick="go(1)" id="t-bk2">← Indietro</button>
+    <div class="ftitle"><h2 id="t-f2h">Dati macchina</h2><p id="t-f2p">Informazioni sul macchinario</p></div>
+    <div class="fstep" id="t-f2s">Passo 2 di 3</div>
+    <div class="fg2">
+      <div class="fld"><label id="t-lma">Marca *</label><input id="v-marca" type="text" placeholder="Samsung, LG, Bosch..."></div>
+      <div class="fld"><label id="t-lmo">Modello</label><input id="v-modello" type="text" placeholder="Es: WW80J5355FW"></div>
     </div>
-    <div class="form-step-label" id="f2-step">Passo 2 di 3</div>
-    <div class="field-grid">
-      <div class="field">
-        <label id="l-marca">Marca *</label>
-        <input type="text" id="inp-marca" placeholder="Samsung, LG, Bosch...">
-      </div>
-      <div class="field">
-        <label id="l-modello">Modello</label>
-        <input type="text" id="inp-modello" placeholder="Es: WW80J5355FW">
-      </div>
-    </div>
-    <div class="field">
-      <label id="l-seriale">Numero seriale</label>
-      <input type="text" id="inp-seriale" placeholder="Sulla targhetta della macchina">
-    </div>
-    <div class="field">
-      <label id="l-problema">Descrivi il problema *</label>
-      <textarea id="inp-problema" placeholder="Cosa succede? Da quando? Hai già provato qualcosa?"></textarea>
-    </div>
-    <button class="btn-next" onclick="nextStep2()" id="f2-next">Continua →</button>
+    <div class="fld"><label id="t-lse">Numero seriale</label><input id="v-seriale" type="text" placeholder="Sulla targhetta della macchina"></div>
+    <div class="fld"><label id="t-lpr">Descrivi il problema *</label><textarea id="v-problema" placeholder="Cosa succede? Da quando? Hai già provato qualcosa?"></textarea></div>
+    <button class="bnext" onclick="step2()" id="t-f2n">Continua →</button>
   </div>
 
-  <!-- SCREEN 3: RIEPILOGO -->
-  <div class="screen" id="screen3">
-    <button class="btn-back" onclick="goTo(2)" id="f-back3">← Indietro</button>
-    <div class="form-title">
-      <h2 id="f3-title">Riepilogo</h2>
-      <p id="f3-sub">Controlla i dati prima di inviare</p>
-    </div>
-    <div class="form-step-label" id="f3-step">Passo 3 di 3</div>
-
-    <div class="riepilogo-card" id="riepilogoCard"></div>
-
-    <div class="loading" id="loadingDiv">
-      <div class="spinner"></div>
-      <p id="l-sending">Invio in corso...</p>
-    </div>
-
-    <button class="btn-next" onclick="submitForm()" id="f3-submit">📤 Invia richiesta</button>
+  <!-- S3: RIEPILOGO -->
+  <div class="sc" id="s3">
+    <button class="bback" onclick="go(2)" id="t-bk3">← Indietro</button>
+    <div class="ftitle"><h2 id="t-f3h">Riepilogo</h2><p id="t-f3p">Controlla i dati prima di inviare</p></div>
+    <div class="fstep" id="t-f3s">Passo 3 di 3</div>
+    <div class="rcard" id="rcard"></div>
+    <div class="ldr" id="ldr"><div class="spin"></div><p id="t-send">Invio in corso...</p></div>
+    <button class="bnext" onclick="submit()" id="t-sub">Invia richiesta</button>
   </div>
 
-  <!-- SCREEN 4: SUCCESSO -->
-  <div class="screen" id="screen4">
-    <div class="success-screen">
-      <div class="success-icon">✅</div>
-      <h2 id="s-title">Richiesta inviata!</h2>
-      <p id="s-msg">La tua richiesta è stata ricevuta. Un tecnico Rotondi Group ti contatterà a breve.</p>
-      <div class="protocollo-box">
-        <div class="label" id="s-proto-label">Numero protocollo</div>
-        <div class="code" id="s-proto-code">RG000000</div>
-      </div>
-      <p id="s-email-msg" style="font-size:13px;color:var(--muted);margin-top:8px"></p>
-      <br>
-      <button class="btn-restart" onclick="restart()" id="s-new">Nuova richiesta</button>
+  <!-- S4: SUCCESSO -->
+  <div class="sc" id="s4">
+    <div class="succ">
+      <div style="font-size:52px">✅</div>
+      <h2 id="t-sh">Richiesta inviata!</h2>
+      <p id="t-sp">La tua richiesta è stata ricevuta. Un tecnico ti contatterà a breve.</p>
+      <div class="pbox"><div class="plbl" id="t-pl">Numero protocollo</div><div class="pcode" id="t-pc">RG000000</div></div>
+      <p id="t-em" style="font-size:13px;color:var(--muted);margin-top:8px"></p><br>
+      <button class="brest" onclick="restart()" id="t-nr">Nuova richiesta</button>
     </div>
   </div>
 
-  <!-- SCREEN 5: RIFIUTO -->
-  <div class="screen" id="screen5">
-    <div class="declined-screen">
-      <div style="font-size:48px;margin-bottom:16px">🙏</div>
-      <h2 id="d-title">Servizio non accettato</h2>
-      <p id="d-msg">Ha scelto di non procedere. Se cambia idea può tornare in qualsiasi momento.</p>
-      <button class="btn-restart" onclick="restart()" id="d-restart">Torna all'inizio</button>
+  <!-- S5: RIFIUTO -->
+  <div class="sc" id="s5">
+    <div class="dec">
+      <div style="font-size:48px;margin-bottom:14px">🙏</div>
+      <h2 id="t-dh">Servizio non accettato</h2>
+      <p id="t-dp">Ha scelto di non procedere. Può tornare in qualsiasi momento.</p>
+      <button class="brest" onclick="restart()" id="t-dr">Torna all'inizio</button>
     </div>
   </div>
-
 </div>
 
 <script>
-const T = {
-  it: {
-    'c-title':'ASSISTENZA<br><span>TECNICA</span>',
-    'c-sub':'Rotondi Group Roma — Leggi le condizioni prima di procedere',
-    'c-info-title':'Informativa sul servizio',
-    'c-paid':'L\'assistenza tecnica è un <strong>servizio a pagamento</strong>, anche se il prodotto è <strong>in garanzia</strong>.',
-    'c-warranty':'In garanzia vengono riconosciute solo le <b>parti di ricambio difettose</b> (sostituzione senza costo).',
-    'c-charge':'<strong>Sempre a carico del cliente:</strong> Manodopera · Spostamento tecnico · Costo chiamata',
-    'c-zone1':'Zona di Roma','c-zone2':'Fuori Roma (Latina, Frosinone, Rieti, Viterbo...)',
-    'c-r1l':'Uscita + 1 ora lavoro','c-r2l':'Ore successive',
-    'c-r3l':'Trasferta km','c-r4l':'Ore di viaggio','c-r5l':'Ore di lavoro',
-    'c-freelance':'&#128295; I tecnici che operano con Rotondi Group sono <strong>liberi professionisti freelance indipendenti</strong>, selezionati dalla nostra azienda. Non sono dipendenti Rotondi Group.',
-    'c-accept':'✅  Accetto le condizioni','c-decline':'❌  Rifiuto',
-    'f-back':'← Indietro','f-back2':'← Indietro','f-back3':'← Indietro',
-    'f1-title':'Dati personali','f1-sub':'Inserisci i tuoi dati di contatto','f1-step':'Passo 1 di 3',
-    'l-nome':'Nome e cognome *','l-indirizzo':'Indirizzo completo *',
-    'l-telefono':'Telefono *','l-email':'Email *',
-    'h-indirizzo':'Via, numero civico e città','h-email':'Per ricevere la conferma',
-    'f1-next':'Continua →',
-    'f2-title':'Dati macchina','f2-sub':'Informazioni sul macchinario','f2-step':'Passo 2 di 3',
-    'l-marca':'Marca *','l-modello':'Modello','l-seriale':'Numero seriale','l-problema':'Descrivi il problema *',
-    'f2-next':'Continua →',
-    'f3-title':'Riepilogo','f3-sub':'Controlla i dati prima di inviare','f3-step':'Passo 3 di 3',
-    'l-sending':'Invio in corso...','f3-submit':'📤 Invia richiesta',
-    's-title':'Richiesta inviata!','s-msg':'La tua richiesta è stata ricevuta. Un tecnico Rotondi Group ti contatterà a breve.',
-    's-proto-label':'Numero protocollo','s-new':'Nuova richiesta',
-    'd-title':'Servizio non accettato','d-msg':'Ha scelto di non procedere. Se cambia idea può tornare in qualsiasi momento.',
-    'd-restart':'Torna all\'inizio',
-    'r-nome':'Nome','r-indirizzo':'Indirizzo','r-tel':'Telefono','r-email':'Email',
-    'r-marca':'Marca','r-modello':'Modello','r-seriale':'Seriale','r-problema':'Problema',
+var lang='it', cur=0;
+
+var TX={
+  it:{
+    'title':'ASSISTENZA<br><em>TECNICA</em>',
+    'sub':'Rotondi Group Roma — Leggi le condizioni prima di procedere',
+    'ctitle':'Informativa sul servizio',
+    'c1':"L'assistenza tecnica è un <b>servizio a pagamento</b>, anche se il prodotto è <b>in garanzia</b>.",
+    'c2':'In garanzia vengono riconosciute solo le <b>parti di ricambio difettose</b> (sostituzione senza costo).',
+    'c3':'<b>Sempre a carico del cliente:</b> Manodopera · Spostamento tecnico · Costo chiamata',
+    'z1':'Zona di Roma','z2':'Fuori Roma (Latina, Frosinone, Rieti, Viterbo...)',
+    'r1l':'Uscita + 1 ora lavoro','r2l':'Ore successive','r3l':'Trasferta km','r4l':'Ore viaggio','r5l':'Ore lavoro',
+    'frl':'I tecnici che operano con Rotondi Group sono <b>liberi professionisti freelance indipendenti</b>, selezionati dalla nostra azienda. Non sono dipendenti Rotondi Group.',
+    'acc':'✓ Accetto le condizioni','dec':'✗ Rifiuto',
+    'bk':'← Indietro',
+    'f1h':'Dati personali','f1p':'Inserisci i tuoi dati di contatto','f1s':'Passo 1 di 3',
+    'ln':'Nome e cognome *','li':'Indirizzo completo *','lt':'Telefono *','le':'Email *',
+    'hi':'Via, numero civico e città','he':'Per ricevere la conferma',
+    'f1n':'Continua →',
+    'f2h':'Dati macchina','f2p':'Informazioni sul macchinario','f2s':'Passo 2 di 3',
+    'lma':'Marca *','lmo':'Modello','lse':'Numero seriale','lpr':'Descrivi il problema *',
+    'f2n':'Continua →',
+    'f3h':'Riepilogo','f3p':'Controlla i dati prima di inviare','f3s':'Passo 3 di 3',
+    'send':'Invio in corso...','sub':'📤 Invia richiesta',
+    'sh':'Richiesta inviata!','sp':'La tua richiesta è stata ricevuta. Un tecnico Rotondi Group ti contatterà a breve.',
+    'pl':'Numero protocollo','nr':'Nuova richiesta',
+    'dh':'Servizio non accettato','dp':'Ha scelto di non procedere. Può tornare in qualsiasi momento.','dr':"Torna all'inizio",
+    'rn':'Nome','ri':'Indirizzo','rt':'Telefono','re':'Email','rma':'Marca','rmo':'Modello','rse':'Seriale','rpr':'Problema',
+    'err':'Compila tutti i campi obbligatori (*)','err2':'Compila i campi obbligatori (*)',
+    'eml':'Conferma inviata a: '
   },
-  en: {
-    'c-title':'TECHNICAL<br><span>ASSISTANCE</span>',
-    'c-sub':'Rotondi Group Roma — Read the conditions before proceeding',
-    'c-info-title':'Service information',
-    'c-paid':'Technical assistance is a <b>paid service</b>, even if the product is <b>under warranty</b>.',
-    'c-warranty':'Under warranty only <b>defective spare parts</b> are replaced (no cost).',
-    'c-charge':'<b>Always charged to customer:</b> Labour - Technician travel - Call-out fee',
-    'c-zone1':'Rome area','c-zone2':'Outside Rome',
-    'c-r1l':'Call-out + 1h work','c-r2l':'Additional hours',
-    'c-r3l':'Travel km','c-r4l':'Travel hours','c-r5l':'Work hours',
-    'c-freelance':'&#128295; Our technicians are <strong>independent freelance professionals</strong> selected by Rotondi Group. They are not company employees.',
-    'c-accept':'✅  I Accept','c-decline':'❌  Decline',
-    'f-back':'← Back','f-back2':'← Back','f-back3':'← Back',
-    'f1-title':'Personal details','f1-sub':'Enter your contact information','f1-step':'Step 1 of 3',
-    'l-nome':'Full name *','l-indirizzo':'Full address *',
-    'l-telefono':'Phone *','l-email':'Email *',
-    'h-indirizzo':'Street, number and city','h-email':'To receive confirmation',
-    'f1-next':'Continue →',
-    'f2-title':'Machine details','f2-sub':'Information about the machine','f2-step':'Step 2 of 3',
-    'l-marca':'Brand *','l-modello':'Model','l-seriale':'Serial number','l-problema':'Describe the problem *',
-    'f2-next':'Continue →',
-    'f3-title':'Summary','f3-sub':'Check your details before sending','f3-step':'Step 3 of 3',
-    'l-sending':'Sending...','f3-submit':'📤 Send request',
-    's-title':'Request sent!','s-msg':'Your request has been received. A Rotondi Group technician will contact you shortly.',
-    's-proto-label':'Protocol number','s-new':'New request',
-    'd-title':'Service not accepted','d-msg':'You chose not to proceed. You can come back at any time.',
-    'd-restart':'Back to start',
-    'r-nome':'Name','r-indirizzo':'Address','r-tel':'Phone','r-email':'Email',
-    'r-marca':'Brand','r-modello':'Model','r-seriale':'Serial','r-problema':'Problem',
+  en:{
+    'title':'TECHNICAL<br><em>ASSISTANCE</em>',
+    'sub':'Rotondi Group Roma — Read the conditions before proceeding',
+    'ctitle':'Service information',
+    'c1':'Technical assistance is a <b>paid service</b>, even if the product is <b>under warranty</b>.',
+    'c2':'Under warranty only <b>defective spare parts</b> are replaced at no cost.',
+    'c3':'<b>Always charged to customer:</b> Labour · Technician travel · Call-out fee',
+    'z1':'Rome area','z2':'Outside Rome',
+    'r1l':'Call-out + 1h work','r2l':'Additional hours','r3l':'Travel km','r4l':'Travel hours','r5l':'Work hours',
+    'frl':'Our technicians are <b>independent freelance professionals</b> selected by Rotondi Group. They are not company employees.',
+    'acc':'✓ I Accept','dec':'✗ Decline',
+    'bk':'← Back',
+    'f1h':'Personal details','f1p':'Enter your contact information','f1s':'Step 1 of 3',
+    'ln':'Full name *','li':'Full address *','lt':'Phone *','le':'Email *',
+    'hi':'Street, number and city','he':'To receive confirmation',
+    'f1n':'Continue →',
+    'f2h':'Machine details','f2p':'Information about the machine','f2s':'Step 2 of 3',
+    'lma':'Brand *','lmo':'Model','lse':'Serial number','lpr':'Describe the problem *',
+    'f2n':'Continue →',
+    'f3h':'Summary','f3p':'Check your details before sending','f3s':'Step 3 of 3',
+    'send':'Sending...','sub':'📤 Send request',
+    'sh':'Request sent!','sp':'Your request has been received. A Rotondi Group technician will contact you shortly.',
+    'pl':'Protocol number','nr':'New request',
+    'dh':'Service not accepted','dp':'You chose not to proceed. You can come back at any time.','dr':'Back to start',
+    'rn':'Name','ri':'Address','rt':'Phone','re':'Email','rma':'Brand','rmo':'Model','rse':'Serial','rpr':'Problem',
+    'err':'Fill all required fields (*)','err2':'Fill required fields (*)',
+    'eml':'Confirmation sent to: '
   },
-  bn: {
-    'c-title':'প্রযুক্তিগত<br><span>সহায়তা</span>',
-    'c-sub':'রোটোন্ডি গ্রুপ রোমা — এগিয়ে যাওয়ার আগে শর্তাবলী পড়ুন',
-    'c-info-title':'সেবার তথ্য',
-    'c-paid':'প্রযুক্তিগত সহায়তা একটি <b>পেইড সার্ভিস</b>, এমনকি পণ্যটি <b>ওয়ারেন্টিতে</b> থাকলেও।',
-    'c-warranty':'ওয়ারেন্টিতে শুধু <b>ত্রুটিপূর্ণ যন্ত্রাংশ</b> বিনামূল্যে প্রতিস্থাপন করা হয়।',
-    'c-charge':'<b>সর্বদা গ্রাহকের খরচ:</b> শ্রম - যাতায়াত - কল চার্জ',
-    'c-zone1':'রোমা এলাকা','c-zone2':'রোমার বাইরে',
-    'c-r1l':'আসা + ১ ঘণ্টা','c-r2l':'অতিরিক্ত ঘণ্টা',
-    'c-r3l':'যাতায়াত কিমি','c-r4l':'ভ্রমণ সময়','c-r5l':'কাজের সময়',
-    'c-freelance':'&#128295; আমাদের টেকনিশিয়ানরা <strong>স্বাধীন ফ্রিল্যান্স পেশাদার</strong>, রোটোন্ডি গ্রুপ কর্তৃক নির্বাচিত।',
-    'c-accept':'✅  গ্রহণ করি','c-decline':'❌  প্রত্যাখ্যান',
-    'f-back':'← ফিরে যান','f-back2':'← ফিরে যান','f-back3':'← ফিরে যান',
-    'f1-title':'ব্যক্তিগত তথ্য','f1-sub':'আপনার যোগাযোগের তথ্য দিন','f1-step':'ধাপ ১ এর ৩',
-    'l-nome':'নাম এবং পদবি *','l-indirizzo':'সম্পূর্ণ ঠিকানা *',
-    'l-telefono':'ফোন *','l-email':'ইমেইল *',
-    'h-indirizzo':'রাস্তা, নম্বর এবং শহর','h-email':'নিশ্চিতকরণ পেতে',
-    'f1-next':'পরবর্তী →',
-    'f2-title':'মেশিনের তথ্য','f2-sub':'মেশিন সম্পর্কে তথ্য','f2-step':'ধাপ ২ এর ৩',
-    'l-marca':'ব্র্যান্ড *','l-modello':'মডেল','l-seriale':'সিরিয়াল নম্বর','l-problema':'সমস্যা বর্ণনা করুন *',
-    'f2-next':'পরবর্তী →',
-    'f3-title':'সারসংক্ষেপ','f3-sub':'পাঠানোর আগে তথ্য যাচাই করুন','f3-step':'ধাপ ৩ এর ৩',
-    'l-sending':'পাঠানো হচ্ছে...','f3-submit':'📤 অনুরোধ পাঠান',
-    's-title':'অনুরোধ পাঠানো হয়েছে!','s-msg':'আপনার অনুরোধ পাওয়া গেছে। শীঘ্রই একজন টেকনিশিয়ান যোগাযোগ করবেন।',
-    's-proto-label':'প্রোটোকল নম্বর','s-new':'নতুন অনুরোধ',
-    'd-title':'সেবা গ্রহণ করা হয়নি','d-msg':'আপনি এগিয়ে না যাওয়ার সিদ্ধান্ত নিয়েছেন।',
-    'd-restart':'শুরুতে ফিরুন',
-    'r-nome':'নাম','r-indirizzo':'ঠিকানা','r-tel':'ফোন','r-email':'ইমেইল',
-    'r-marca':'ব্র্যান্ড','r-modello':'মডেল','r-seriale':'সিরিয়াল','r-problema':'সমস্যা',
+  bn:{
+    'title':'প্রযুক্তিগত<br><em>সহায়তা</em>',
+    'sub':'রোটোন্ডি গ্রুপ রোমা — এগিয়ে যাওয়ার আগে শর্তাবলী পড়ুন',
+    'ctitle':'সেবার তথ্য',
+    'c1':'প্রযুক্তিগত সহায়তা একটি <b>পেইড সার্ভিস</b>, এমনকি পণ্যটি <b>ওয়ারেন্টিতে</b> থাকলেও।',
+    'c2':'ওয়ারেন্টিতে শুধু <b>ত্রুটিপূর্ণ যন্ত্রাংশ</b> বিনামূল্যে প্রতিস্থাপন করা হয়।',
+    'c3':'<b>সর্বদা গ্রাহকের খরচ:</b> শ্রম · যাতায়াত · কল চার্জ',
+    'z1':'রোমা এলাকা','z2':'রোমার বাইরে',
+    'r1l':'আসা + ১ ঘণ্টা','r2l':'অতিরিক্ত ঘণ্টা','r3l':'যাতায়াত কিমি','r4l':'ভ্রমণ সময়','r5l':'কাজের সময়',
+    'frl':'আমাদের টেকনিশিয়ানরা <b>স্বাধীন ফ্রিল্যান্স পেশাদার</b>, রোটোন্ডি গ্রুপ কর্তৃক নির্বাচিত।',
+    'acc':'✓ গ্রহণ করি','dec':'✗ প্রত্যাখ্যান',
+    'bk':'← ফিরে যান',
+    'f1h':'ব্যক্তিগত তথ্য','f1p':'আপনার যোগাযোগের তথ্য দিন','f1s':'ধাপ ১ এর ৩',
+    'ln':'নাম এবং পদবি *','li':'সম্পূর্ণ ঠিকানা *','lt':'ফোন *','le':'ইমেইল *',
+    'hi':'রাস্তা, নম্বর এবং শহর','he':'নিশ্চিতকরণ পেতে',
+    'f1n':'পরবর্তী →',
+    'f2h':'মেশিনের তথ্য','f2p':'মেশিন সম্পর্কে তথ্য','f2s':'ধাপ ২ এর ৩',
+    'lma':'ব্র্যান্ড *','lmo':'মডেল','lse':'সিরিয়াল নম্বর','lpr':'সমস্যা বর্ণনা করুন *',
+    'f2n':'পরবর্তী →',
+    'f3h':'সারসংক্ষেপ','f3p':'পাঠানোর আগে তথ্য যাচাই করুন','f3s':'ধাপ ৩ এর ৩',
+    'send':'পাঠানো হচ্ছে...','sub':'📤 অনুরোধ পাঠান',
+    'sh':'অনুরোধ পাঠানো হয়েছে!','sp':'আপনার অনুরোধ পাওয়া গেছে। শীঘ্রই একজন টেকনিশিয়ান যোগাযোগ করবেন।',
+    'pl':'প্রোটোকল নম্বর','nr':'নতুন অনুরোধ',
+    'dh':'সেবা গ্রহণ করা হয়নি','dp':'আপনি এগিয়ে না যাওয়ার সিদ্ধান্ত নিয়েছেন।','dr':'শুরুতে ফিরুন',
+    'rn':'নাম','ri':'ঠিকানা','rt':'ফোন','re':'ইমেইল','rma':'ব্র্যান্ড','rmo':'মডেল','rse':'সিরিয়াল','rpr':'সমস্যা',
+    'err':'সব বাধ্যতামূলক ক্ষেত্র পূরণ করুন (*)','err2':'বাধ্যতামূলক ক্ষেত্র পূরণ করুন (*)',
+    'eml':'নিশ্চিতকরণ পাঠানো হয়েছে: '
   },
-  zh: {
-    'c-title':'技术<br><span>援助</span>',
-    'c-sub':'罗通迪集团罗马 — 继续前请阅读条款',
-    'c-info-title':'服务信息',
-    'c-paid':'技术援助是<b>付费服务</b>，即使产品<b>在保修期内</b>也是如此。',
-    'c-warranty':'保修期内仅免费更换<b>有缺陷的零件</b>。',
-    'c-charge':'<b>始终由客户承担：</b>人工费 - 差旅费 - 上门费',
-    'c-zone1':'罗马地区','c-zone2':'罗马以外地区',
-    'c-r1l':'上门费+1小时','c-r2l':'额外每小时',
-    'c-r3l':'差旅公里','c-r4l':'路途时间','c-r5l':'工作时间',
-    'c-freelance':'&#128295; 我们的技术人员是<strong>独立自由职业者</strong>，由罗通迪集团选派，非公司雇员。',
-    'c-accept':'✅  我接受','c-decline':'❌  拒绝',
-    'f-back':'← 返回','f-back2':'← 返回','f-back3':'← 返回',
-    'f1-title':'个人信息','f1-sub':'输入您的联系信息','f1-step':'第1步，共3步',
-    'l-nome':'姓名 *','l-indirizzo':'完整地址 *',
-    'l-telefono':'电话 *','l-email':'电子邮件 *',
-    'h-indirizzo':'街道、门牌号和城市','h-email':'用于接收确认',
-    'f1-next':'继续 →',
-    'f2-title':'机器信息','f2-sub':'关于机器的信息','f2-step':'第2步，共3步',
-    'l-marca':'品牌 *','l-modello':'型号','l-seriale':'序列号','l-problema':'描述问题 *',
-    'f2-next':'继续 →',
-    'f3-title':'摘要','f3-sub':'发送前检查您的信息','f3-step':'第3步，共3步',
-    'l-sending':'发送中...','f3-submit':'📤 发送请求',
-    's-title':'请求已发送！','s-msg':'您的请求已收到。罗通迪集团技术人员将很快与您联系。',
-    's-proto-label':'协议编号','s-new':'新请求',
-    'd-title':'未接受服务','d-msg':'您选择不继续。随时可以返回。',
-    'd-restart':'返回开始',
-    'r-nome':'姓名','r-indirizzo':'地址','r-tel':'电话','r-email':'电子邮件',
-    'r-marca':'品牌','r-modello':'型号','r-seriale':'序列号','r-problema':'问题',
+  zh:{
+    'title':'技术<br><em>援助</em>',
+    'sub':'罗通迪集团罗马 — 继续前请阅读条款',
+    'ctitle':'服务信息',
+    'c1':'技术援助是<b>付费服务</b>，即使产品<b>在保修期内</b>也是如此。',
+    'c2':'保修期内仅免费更换<b>有缺陷的零件</b>。',
+    'c3':'<b>始终由客户承担：</b>人工费 · 差旅费 · 上门费',
+    'z1':'罗马地区','z2':'罗马以外地区',
+    'r1l':'上门费+1小时','r2l':'额外每小时','r3l':'差旅公里','r4l':'路途时间','r5l':'工作时间',
+    'frl':'我们的技术人员是<b>独立自由职业者</b>，由罗通迪集团选派，非公司雇员。',
+    'acc':'✓ 我接受','dec':'✗ 拒绝',
+    'bk':'← 返回',
+    'f1h':'个人信息','f1p':'输入您的联系信息','f1s':'第1步，共3步',
+    'ln':'姓名 *','li':'完整地址 *','lt':'电话 *','le':'电子邮件 *',
+    'hi':'街道、门牌号和城市','he':'用于接收确认',
+    'f1n':'继续 →',
+    'f2h':'机器信息','f2p':'关于机器的信息','f2s':'第2步，共3步',
+    'lma':'品牌 *','lmo':'型号','lse':'序列号','lpr':'描述问题 *',
+    'f2n':'继续 →',
+    'f3h':'摘要','f3p':'发送前检查您的信息','f3s':'第3步，共3步',
+    'send':'发送中...','sub':'📤 发送请求',
+    'sh':'请求已发送！','sp':'您的请求已收到。罗通迪集团技术人员将很快与您联系。',
+    'pl':'协议编号','nr':'新请求',
+    'dh':'未接受服务','dp':'您选择不继续。随时可以返回。','dr':'返回开始',
+    'rn':'姓名','ri':'地址','rt':'电话','re':'电子邮件','rma':'品牌','rmo':'型号','rse':'序列号','rpr':'问题',
+    'err':'请填写所有必填字段 (*)','err2':'请填写必填字段 (*)',
+    'eml':'确认已发送至: '
   },
-  ar: {
-    'c-title':'المساعدة<br><span>التقنية</span>',
-    'c-sub':'روتوندي جروب روما — اقرأ الشروط قبل المتابعة',
-    'c-info-title':'معلومات الخدمة',
-    'c-paid':'المساعدة التقنية <b>خدمة مدفوعة</b>، حتى لو كان المنتج <b>تحت الضمان</b>.',
-    'c-warranty':'الضمان يشمل فقط استبدال <b>قطع الغيار المعيبة</b> مجاناً.',
-    'c-charge':'<b>دائماً على حساب العميل:</b> أجرة العمل - التنقل - رسوم الزيارة',
-    'c-zone1':'منطقة روما','c-zone2':'خارج روما',
-    'c-r1l':'زيارة + ساعة عمل','c-r2l':'ساعات إضافية',
-    'c-r3l':'كيلومترات التنقل','c-r4l':'ساعات السفر','c-r5l':'ساعات العمل',
-    'c-freelance':'&#128295; فنيونا <strong>محترفون مستقلون فريلانس</strong>، من اختيار روتوندي جروب، وليسوا موظفين في الشركة.',
-    'c-accept':'✅  أقبل الشروط','c-decline':'❌  أرفض',
-    'f-back':'→ رجوع','f-back2':'→ رجوع','f-back3':'→ رجوع',
-    'f1-title':'البيانات الشخصية','f1-sub':'أدخل معلومات الاتصال','f1-step':'الخطوة 1 من 3',
-    'l-nome':'الاسم الكامل *','l-indirizzo':'العنوان الكامل *',
-    'l-telefono':'الهاتف *','l-email':'البريد الإلكتروني *',
-    'h-indirizzo':'الشارع والرقم والمدينة','h-email':'لاستلام التأكيد',
-    'f1-next':'→ متابعة',
-    'f2-title':'بيانات الجهاز','f2-sub':'معلومات عن الجهاز','f2-step':'الخطوة 2 من 3',
-    'l-marca':'الماركة *','l-modello':'الموديل','l-seriale':'الرقم التسلسلي','l-problema':'صف المشكلة *',
-    'f2-next':'→ متابعة',
-    'f3-title':'الملخص','f3-sub':'تحقق من بياناتك قبل الإرسال','f3-step':'الخطوة 3 من 3',
-    'l-sending':'جارٍ الإرسال...','f3-submit':'📤 إرسال الطلب',
-    's-title':'تم إرسال الطلب!','s-msg':'تم استلام طلبك. سيتصل بك فني روتوندي جروب قريباً.',
-    's-proto-label':'رقم البروتوكول','s-new':'طلب جديد',
-    'd-title':'لم تُقبل الخدمة','d-msg':'اخترت عدم المتابعة. يمكنك العودة في أي وقت.',
-    'd-restart':'العودة إلى البداية',
-    'r-nome':'الاسم','r-indirizzo':'العنوان','r-tel':'الهاتف','r-email':'البريد',
-    'r-marca':'الماركة','r-modello':'الموديل','r-seriale':'التسلسلي','r-problema':'المشكلة',
+  ar:{
+    'title':'المساعدة<br><em>التقنية</em>',
+    'sub':'روتوندي جروب روما — اقرأ الشروط قبل المتابعة',
+    'ctitle':'معلومات الخدمة',
+    'c1':'المساعدة التقنية <b>خدمة مدفوعة</b>، حتى لو كان المنتج <b>تحت الضمان</b>.',
+    'c2':'الضمان يشمل فقط استبدال <b>قطع الغيار المعيبة</b> مجاناً.',
+    'c3':'<b>دائماً على حساب العميل:</b> أجرة العمل · التنقل · رسوم الزيارة',
+    'z1':'منطقة روما','z2':'خارج روما',
+    'r1l':'زيارة + ساعة عمل','r2l':'ساعات إضافية','r3l':'كيلومترات التنقل','r4l':'ساعات السفر','r5l':'ساعات العمل',
+    'frl':'فنيونا <b>محترفون مستقلون فريلانس</b>، من اختيار روتوندي جروب، وليسوا موظفين في الشركة.',
+    'acc':'✓ أقبل الشروط','dec':'✗ أرفض',
+    'bk':'→ رجوع',
+    'f1h':'البيانات الشخصية','f1p':'أدخل معلومات الاتصال','f1s':'الخطوة 1 من 3',
+    'ln':'الاسم الكامل *','li':'العنوان الكامل *','lt':'الهاتف *','le':'البريد الإلكتروني *',
+    'hi':'الشارع والرقم والمدينة','he':'لاستلام التأكيد',
+    'f1n':'→ متابعة',
+    'f2h':'بيانات الجهاز','f2p':'معلومات عن الجهاز','f2s':'الخطوة 2 من 3',
+    'lma':'الماركة *','lmo':'الموديل','lse':'الرقم التسلسلي','lpr':'صف المشكلة *',
+    'f2n':'→ متابعة',
+    'f3h':'الملخص','f3p':'تحقق من بياناتك قبل الإرسال','f3s':'الخطوة 3 من 3',
+    'send':'جارٍ الإرسال...','sub':'📤 إرسال الطلب',
+    'sh':'تم إرسال الطلب!','sp':'تم استلام طلبك. سيتصل بك فني روتوندي جروب قريباً.',
+    'pl':'رقم البروتوكول','nr':'طلب جديد',
+    'dh':'لم تُقبل الخدمة','dp':'اخترت عدم المتابعة. يمكنك العودة في أي وقت.','dr':'العودة إلى البداية',
+    'rn':'الاسم','ri':'العنوان','rt':'الهاتف','re':'البريد','rma':'الماركة','rmo':'الموديل','rse':'التسلسلي','rpr':'المشكلة',
+    'err':'يرجى ملء جميع الحقول المطلوبة (*)','err2':'يرجى ملء الحقول المطلوبة (*)',
+    'eml':'تم إرسال التأكيد إلى: '
   }
 };
 
-let lang = 'it';
-let currentScreen = 0;
+// Map translation keys to element IDs
+var MAP={
+  'title':'t-title','sub':'t-sub','ctitle':'t-ctitle',
+  'c1':'t-c1','c2':'t-c2','c3':'t-c3',
+  'z1':'t-z1','z2':'t-z2',
+  'r1l':'t-r1l','r2l':'t-r2l','r3l':'t-r3l','r4l':'t-r4l','r5l':'t-r5l',
+  'frl':'t-frl','acc':'t-acc','dec':'t-dec',
+  'bk':'t-bk','bk2':'t-bk2','bk3':'t-bk3',
+  'f1h':'t-f1h','f1p':'t-f1p','f1s':'t-f1s',
+  'ln':'t-ln','li':'t-li','lt':'t-lt','le':'t-le','hi':'t-hi','he':'t-he','f1n':'t-f1n',
+  'f2h':'t-f2h','f2p':'t-f2p','f2s':'t-f2s',
+  'lma':'t-lma','lmo':'t-lmo','lse':'t-lse','lpr':'t-lpr','f2n':'t-f2n',
+  'f3h':'t-f3h','f3p':'t-f3p','f3s':'t-f3s',
+  'send':'t-send','sub':'t-sub',
+  'sh':'t-sh','sp':'t-sp','pl':'t-pl','nr':'t-nr',
+  'dh':'t-dh','dp':'t-dp','dr':'t-dr'
+};
 
-function setLang(l) {
-  lang = l;
-  document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
-  applyLang();
+function setL(l,btn){
+  lang=l;
+  document.querySelectorAll('.lb').forEach(function(b){b.classList.remove('on')});
+  btn.classList.add('on');
+  applyL();
 }
 
-function applyLang() {
-  const t = T[lang];
-  for (const [id, val] of Object.entries(t)) {
-    const el = document.getElementById(id);
-    if (el) el.innerHTML = val;
+function applyL(){
+  var t=TX[lang];
+  for(var k in MAP){
+    var el=document.getElementById(MAP[k]);
+    if(el && t[k]!==undefined) el.innerHTML=t[k];
   }
-  // RTL for Arabic
-  document.body.style.direction = lang === 'ar' ? 'rtl' : 'ltr';
+  document.body.dir=lang==='ar'?'rtl':'ltr';
 }
 
-function goTo(n) {
-  document.getElementById('screen' + currentScreen).classList.remove('active');
-  document.getElementById('screen' + n).classList.add('active');
-  currentScreen = n;
-  updateSteps(n);
-  window.scrollTo(0, 0);
-}
-
-function updateSteps(n) {
-  const bar = document.getElementById('stepsBar');
-  if (n === 0 || n >= 4) { bar.style.display = 'none'; return; }
-  bar.style.display = 'flex';
-  for (let i = 1; i <= 4; i++) {
-    const dot = document.getElementById('sd' + i);
-    dot.className = 'step-dot';
-    if (i < n) dot.classList.add('done');
-    else if (i === n) dot.classList.add('active');
+function go(n){
+  document.getElementById('s'+cur).classList.remove('on');
+  document.getElementById('s'+n).classList.add('on');
+  cur=n;
+  var sb=document.getElementById('stepbar');
+  if(n>=1&&n<=3){sb.style.display='flex';}else{sb.style.display='none';}
+  for(var i=1;i<=4;i++){
+    var d=document.getElementById('d'+i);
+    d.className='sdot';
+    if(i<n)d.classList.add('done');
+    else if(i===n)d.classList.add('on');
   }
-  for (let i = 1; i <= 3; i++) {
-    const line = document.getElementById('sl' + i);
-    line.className = 'step-line';
-    if (i < n) line.classList.add('done');
+  for(var i=1;i<=3;i++){
+    var l=document.getElementById('l'+i);
+    l.className='sline';
+    if(i<n)l.classList.add('done');
   }
+  window.scrollTo(0,0);
 }
 
-function acceptConditions() { goTo(1); }
-function declineConditions() { goTo(5); }
-
-function nextStep1() {
-  const nome = document.getElementById('inp-nome').value.trim();
-  const ind  = document.getElementById('inp-indirizzo').value.trim();
-  const tel  = document.getElementById('inp-telefono').value.trim();
-  const email = document.getElementById('inp-email').value.trim();
-  if (!nome || !ind || !tel || !email) {
-    alert(lang === 'it' ? 'Compila tutti i campi obbligatori *' :
-          lang === 'en' ? 'Fill all required fields *' :
-          lang === 'bn' ? 'সব বাধ্যতামূলক ক্ষেত্র পূরণ করুন *' :
-          lang === 'zh' ? '请填写所有必填字段 *' : 'يرجى ملء جميع الحقول المطلوبة *');
-    return;
-  }
-  goTo(2);
+function step1(){
+  var n=document.getElementById('v-nome').value.trim();
+  var i=document.getElementById('v-ind').value.trim();
+  var t=document.getElementById('v-tel').value.trim();
+  var e=document.getElementById('v-email').value.trim();
+  if(!n||!i||!t||!e){alert(TX[lang].err||'Compila tutti i campi *');return;}
+  go(2);
 }
 
-function nextStep2() {
-  const marca   = document.getElementById('inp-marca').value.trim();
-  const problema = document.getElementById('inp-problema').value.trim();
-  if (!marca || !problema) {
-    alert(lang === 'it' ? 'Compila i campi obbligatori *' : 'Fill required fields *');
-    return;
-  }
-  buildRiepilogo();
-  goTo(3);
+function step2(){
+  var m=document.getElementById('v-marca').value.trim();
+  var p=document.getElementById('v-problema').value.trim();
+  if(!m||!p){alert(TX[lang].err2||'Compila i campi obbligatori *');return;}
+  buildR();go(3);
 }
 
-function buildRiepilogo() {
-  const t = T[lang];
-  const data = [
-    [t['r-nome'],   document.getElementById('inp-nome').value],
-    [t['r-indirizzo'], document.getElementById('inp-indirizzo').value],
-    [t['r-tel'],    document.getElementById('inp-telefono').value],
-    [t['r-email'],  document.getElementById('inp-email').value],
-    [t['r-marca'],  document.getElementById('inp-marca').value],
-    [t['r-modello'],document.getElementById('inp-modello').value],
-    [t['r-seriale'],document.getElementById('inp-seriale').value],
-    [t['r-problema'],document.getElementById('inp-problema').value],
+function buildR(){
+  var t=TX[lang];
+  var rows=[
+    [t.rn,document.getElementById('v-nome').value],
+    [t.ri,document.getElementById('v-ind').value],
+    [t.rt,document.getElementById('v-tel').value],
+    [t.re,document.getElementById('v-email').value],
+    [t.rma,document.getElementById('v-marca').value],
+    [t.rmo,document.getElementById('v-modello').value],
+    [t.rse,document.getElementById('v-seriale').value],
+    [t.rpr,document.getElementById('v-problema').value]
   ];
-  let html = '';
-  data.forEach(([label, val]) => {
-    if (val) html += `<div class="riepilogo-row"><div class="riepilogo-label">${label}</div><div class="riepilogo-val">${val}</div></div>`;
-  });
-  document.getElementById('riepilogoCard').innerHTML = html;
+  var h='';
+  rows.forEach(function(r){if(r[1])h+='<div class="rrow"><div class="rlbl">'+r[0]+'</div><div class="rval">'+r[1]+'</div></div>';});
+  document.getElementById('rcard').innerHTML=h;
 }
 
-function submitForm() {
-  const btn = document.getElementById('f3-submit');
-  const loading = document.getElementById('loadingDiv');
-  btn.style.display = 'none';
-  loading.style.display = 'block';
-
-  const payload = {
-    lingua:   lang,
-    nome:     document.getElementById('inp-nome').value,
-    indirizzo:document.getElementById('inp-indirizzo').value,
-    telefono: document.getElementById('inp-telefono').value,
-    email:    document.getElementById('inp-email').value,
-    marca:    document.getElementById('inp-marca').value,
-    modello:  document.getElementById('inp-modello').value,
-    seriale:  document.getElementById('inp-seriale').value,
-    problema: document.getElementById('inp-problema').value,
+function submit(){
+  var btn=document.getElementById('t-sub');
+  var ldr=document.getElementById('ldr');
+  btn.style.display='none';ldr.style.display='block';
+  var d={
+    lingua:lang,
+    nome:document.getElementById('v-nome').value,
+    indirizzo:document.getElementById('v-ind').value,
+    telefono:document.getElementById('v-tel').value,
+    email:document.getElementById('v-email').value,
+    marca:document.getElementById('v-marca').value,
+    modello:document.getElementById('v-modello').value,
+    seriale:document.getElementById('v-seriale').value,
+    problema:document.getElementById('v-problema').value
   };
-
-  fetch('/api/richiesta', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
+  fetch('/api/richiesta',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
+  .then(function(r){return r.json();})
+  .then(function(res){
+    ldr.style.display='none';
+    if(res.ok){
+      document.getElementById('t-pc').textContent=res.protocollo;
+      var em=document.getElementById('t-em');
+      if(res.email_sent)em.textContent=(TX[lang].eml||'Email: ')+d.email;
+      go(4);
+    }else{btn.style.display='block';alert('Errore: '+(res.error||'Riprova'));}
   })
-  .then(r => r.json())
-  .then(data => {
-    loading.style.display = 'none';
-    if (data.ok) {
-      document.getElementById('s-proto-code').textContent = data.protocollo;
-      const emailMsg = document.getElementById('s-email-msg');
-      if (data.email_sent) {
-        emailMsg.textContent = lang === 'it' ? `Conferma inviata a: ${payload.email}` :
-                               lang === 'en' ? `Confirmation sent to: ${payload.email}` :
-                               lang === 'bn' ? `নিশ্চিতকরণ পাঠানো হয়েছে: ${payload.email}` :
-                               lang === 'zh' ? `确认已发送至: ${payload.email}` :
-                               `تم إرسال التأكيد إلى: ${payload.email}`;
-      }
-      goTo(4);
-    } else {
-      btn.style.display = 'block';
-      alert('Errore: ' + (data.error || 'Riprova'));
-    }
-  })
-  .catch(err => {
-    loading.style.display = 'none';
-    btn.style.display = 'block';
-    alert('Errore di connessione. Riprova.');
-  });
+  .catch(function(){ldr.style.display='none';btn.style.display='block';alert('Errore connessione. Riprova.');});
 }
 
-function restart() {
-  ['inp-nome','inp-indirizzo','inp-telefono','inp-email',
-   'inp-marca','inp-modello','inp-seriale','inp-problema'].forEach(id => {
-    document.getElementById(id).value = '';
-  });
-  goTo(0);
+function restart(){
+  ['v-nome','v-ind','v-tel','v-email','v-marca','v-modello','v-seriale','v-problema']
+  .forEach(function(id){document.getElementById(id).value='';});
+  go(0);
 }
 
-// Init
-applyLang();
+applyL();
 </script>
 </body>
-</html>'''
+</html>"""
 
 @app.route('/')
 def index():
-    return render_template_string(HTML)
+    return HTML
 
 @app.route('/api/richiesta', methods=['POST'])
 def nuova_richiesta():
     data = request.json
-    if not data:
-        return jsonify({"ok": False, "error": "No data"})
+    if not data: return jsonify({"ok": False, "error": "No data"})
 
     protocollo = genera_protocollo()
-    lingua  = data.get('lingua', 'it')
-    nome    = data.get('nome', '')
-    ind     = data.get('indirizzo', '')
-    tel     = data.get('telefono', '')
-    email   = data.get('email', '')
-    marca   = data.get('marca', '')
-    modello = data.get('modello', '')
-    seriale = data.get('seriale', '')
+    lingua   = data.get('lingua', 'it')
+    nome     = data.get('nome', '')
+    ind      = data.get('indirizzo', '')
+    tel      = data.get('telefono', '')
+    email    = data.get('email', '')
+    marca    = data.get('marca', '')
+    modello  = data.get('modello', '')
+    seriale  = data.get('seriale', '')
     problema = data.get('problema', '')
-    now     = datetime.now().strftime("%d/%m/%Y %H:%M")
+    now      = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-    # Salva DB
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            INSERT INTO richieste_web
+        conn.execute("""INSERT INTO richieste_web
             (protocollo,nome,indirizzo,telefono,email,marca,modello,seriale,problema,lingua,data)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        """, (protocollo, nome, ind, tel, email, marca, modello, seriale, problema, lingua, now))
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (protocollo,nome,ind,tel,email,marca,modello,seriale,problema,lingua,now))
         conn.commit()
 
     FLAGS = {'it':'🇮🇹','en':'🇬🇧','bn':'🇧🇩','zh':'🇨🇳','ar':'🇸🇦'}
     flag = FLAGS.get(lingua, '🌍')
-    maps_link = f"https://www.google.com/maps/search/?api=1&query={ind.replace(' ', '+')},+Roma,+Italia"
+    maps = f"https://www.google.com/maps/search/?api=1&query={ind.replace(' ','+')},+Roma,+Italia"
 
-    # Notifica gruppo tecnici
     keyboard = {"inline_keyboard": [[
-        {"text": "🕛 Entro le 12:00", "callback_data": f"wfascia_{protocollo}_entro12"},
-        {"text": "🕕 Entro le 18:00", "callback_data": f"wfascia_{protocollo}_entro18"},
+        {"text":"🕛 Entro le 12:00","callback_data":f"wfascia_{protocollo}_entro12"},
+        {"text":"🕕 Entro le 18:00","callback_data":f"wfascia_{protocollo}_entro18"},
     ],[
-        {"text": "📅 In giornata",    "callback_data": f"wfascia_{protocollo}_giornata"},
-        {"text": "📆 Entro domani",   "callback_data": f"wfascia_{protocollo}_domani"},
+        {"text":"📅 In giornata","callback_data":f"wfascia_{protocollo}_giornata"},
+        {"text":"📆 Entro domani","callback_data":f"wfascia_{protocollo}_domani"},
     ],[
-        {"text": "🗓 Da programmare", "callback_data": f"wfascia_{protocollo}_programma"},
+        {"text":"🗓 Da programmare","callback_data":f"wfascia_{protocollo}_programma"},
     ]]}
 
     testo = (
         f"🌐 *RICHIESTA WEB #{protocollo}* {flag}\n{'─'*28}\n"
         f"👤 *Cliente:* {nome}\n"
         f"📍 *Indirizzo:* {ind}\n"
-        f"🗺 [Apri su Google Maps]({maps_link})\n"
-        f"📞 *Telefono:* {tel}\n"
+        f"🗺 [Google Maps]({maps})\n"
+        f"📞 *Tel:* {tel}\n"
         f"📧 *Email:* {email}\n"
-        f"🏭 *Marca:* {marca}  ·  *Modello:* {modello}\n"
+        f"🏭 *Marca:* {marca} · *Modello:* {modello or '—'}\n"
         f"🔢 *Seriale:* {seriale or '—'}\n"
         f"🔧 *Problema:* {problema}\n"
         f"{'─'*28}\n"
-        f"⏰ Primo tecnico disponibile: clicca quando intervieni:"
+        f"⏰ Primo tecnico disponibile — clicca:"
     )
-    msg_id = invia_telegram(testo, keyboard)
-
-    # Notifica back office
+    invia_telegram(testo, keyboard)
     invia_telegram_bo(
-        f"🌐 *Nuova richiesta WEB* {flag}\n\n"
-        f"🔖 Protocollo: `{protocollo}`\n"
-        f"👤 {nome}\n📍 {ind}\n📞 {tel}\n📧 {email}\n"
-        f"🏭 {marca} — {modello}\n🔧 {problema}"
+        f"🌐 *Nuova richiesta WEB* {flag}\n"
+        f"🔖 `{protocollo}`\n👤 {nome}\n📍 {ind}\n📞 {tel}\n📧 {email}\n"
+        f"🏭 {marca} {modello}\n🔧 {problema}"
     )
 
-    # Email al cliente
-    SOGGETTI = {'it': f'Rotondi Group Roma — Richiesta ricevuta #{protocollo}',
-                'en': f'Rotondi Group Roma — Request received #{protocollo}',
-                'bn': f'রোটোন্ডি গ্রুপ রোমা — অনুরোধ পাওয়া গেছে #{protocollo}',
-                'zh': f'罗通迪集团罗马 — 已收到请求 #{protocollo}',
-                'ar': f'روتوندي جروب روما — تم استلام طلبك #{protocollo}'}
-
-    CORPI = {'it': f"""
-<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#f5f5f5;padding:20px">
-<div style="background:#1a1a2e;padding:24px;border-radius:8px 8px 0 0;text-align:center">
-  <h1 style="color:#fff;font-size:20px;margin:0">ROTONDI GROUP ROMA</h1>
+    # Email confirmation
+    subjects = {
+        'it': f'Rotondi Group Roma — Richiesta #{protocollo}',
+        'en': f'Rotondi Group Roma — Request #{protocollo}',
+        'bn': f'রোটোন্ডি গ্রুপ রোমা — #{protocollo}',
+        'zh': f'罗通迪集团罗马 — #{protocollo}',
+        'ar': f'روتوندي جروب روما — #{protocollo}'
+    }
+    body = f"""<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
+<div style="background:#0d0d14;padding:24px;text-align:center;border-radius:8px 8px 0 0">
+  <h1 style="color:#fff;font-size:22px;margin:0;font-family:Georgia,serif">ROTONDI GROUP ROMA</h1>
   <p style="color:#c9a84c;margin:4px 0 0;font-size:13px">ASSISTENZA TECNICA</p>
 </div>
 <div style="background:#fff;padding:24px;border-radius:0 0 8px 8px">
-  <h2 style="color:#1a1a2e;font-size:18px">✅ Richiesta ricevuta!</h2>
-  <p style="color:#555">Gentile <strong>{nome}</strong>,<br>
-  La sua richiesta di assistenza è stata ricevuta. Un tecnico la contatterà a breve.</p>
-  <div style="background:#f8f8f8;border-radius:8px;padding:16px;margin:16px 0">
-    <p style="margin:0 0 8px;font-size:13px;color:#888;text-transform:uppercase;letter-spacing:1px">Numero protocollo</p>
-    <p style="font-size:28px;font-weight:700;color:#1a1a2e;letter-spacing:4px;margin:0">{protocollo}</p>
+  <h2 style="color:#0d0d14;font-size:18px">✅ Richiesta ricevuta!</h2>
+  <p>Gentile <b>{nome}</b>, la sua richiesta è stata ricevuta.</p>
+  <div style="background:#f5f5f5;border-radius:8px;padding:16px;margin:16px 0;text-align:center">
+    <p style="font-size:12px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 6px">Numero protocollo</p>
+    <p style="font-size:28px;font-weight:700;color:#0d0d14;letter-spacing:4px;margin:0;font-family:Georgia,serif">{protocollo}</p>
   </div>
-  <p style="color:#555;font-size:14px"><strong>Problema segnalato:</strong> {problema}</p>
+  <p><b>Problema:</b> {problema}</p>
   <hr style="border:none;border-top:1px solid #eee;margin:16px 0">
-  <p style="color:#888;font-size:13px">Per annullare: <strong>+39 06 41 40 0514</strong></p>
-  <p style="color:#888;font-size:13px">Ufficio Roma: <strong>+39 06 41400617</strong></p>
-</div>
-</div>""",
-'en': f"""
-<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#f5f5f5;padding:20px">
-<div style="background:#1a1a2e;padding:24px;border-radius:8px 8px 0 0;text-align:center">
-  <h1 style="color:#fff;font-size:20px;margin:0">ROTONDI GROUP ROMA</h1>
-  <p style="color:#c9a84c;margin:4px 0 0;font-size:13px">TECHNICAL ASSISTANCE</p>
-</div>
-<div style="background:#fff;padding:24px;border-radius:0 0 8px 8px">
-  <h2 style="color:#1a1a2e;font-size:18px">✅ Request received!</h2>
-  <p style="color:#555">Dear <strong>{nome}</strong>,<br>
-  Your assistance request has been received. A technician will contact you shortly.</p>
-  <div style="background:#f8f8f8;border-radius:8px;padding:16px;margin:16px 0">
-    <p style="margin:0 0 8px;font-size:13px;color:#888;text-transform:uppercase;letter-spacing:1px">Protocol number</p>
-    <p style="font-size:28px;font-weight:700;color:#1a1a2e;letter-spacing:4px;margin:0">{protocollo}</p>
-  </div>
-  <p style="color:#555;font-size:14px"><strong>Problem reported:</strong> {problema}</p>
-  <hr style="border:none;border-top:1px solid #eee;margin:16px 0">
-  <p style="color:#888;font-size:13px">To cancel: <strong>+39 06 41 40 0514</strong></p>
-</div></div>"""}
+  <p style="color:#666;font-size:13px">Annullamenti urgenti: <b>+39 06 41 40 0514</b></p>
+  <p style="color:#666;font-size:13px">Ufficio Roma: <b>+39 06 41400617</b></p>
+</div></div>"""
 
-    corpo = CORPI.get(lingua, CORPI['en'])
-    soggetto = SOGGETTI.get(lingua, SOGGETTI['en'])
-    email_sent = invia_email(email, soggetto, corpo)
-
+    email_sent = invia_email(email, subjects.get(lingua, subjects['it']), body)
     return jsonify({"ok": True, "protocollo": protocollo, "email_sent": email_sent})
 
 @app.route('/api/stato/<protocollo>')
-def stato_richiesta(protocollo):
+def stato(protocollo):
     with sqlite3.connect(DB_PATH) as conn:
-        r = conn.execute("""
-            SELECT protocollo, nome, stato, tecnico, fascia, data
-            FROM richieste_web WHERE protocollo=?
-        """, (protocollo,)).fetchone()
-    if not r:
-        return jsonify({"ok": False, "error": "Not found"})
-    return jsonify({"ok": True, "protocollo": r[0], "nome": r[1],
-                    "stato": r[2], "tecnico": r[3], "fascia": r[4], "data": r[5]})
+        r = conn.execute("SELECT protocollo,nome,stato,data FROM richieste_web WHERE protocollo=?",
+                        (protocollo,)).fetchone()
+    if not r: return jsonify({"ok": False, "error": "Not found"})
+    return jsonify({"ok": True, "protocollo": r[0], "nome": r[1], "stato": r[2], "data": r[3]})
 
 if __name__ == '__main__':
     init_db()
