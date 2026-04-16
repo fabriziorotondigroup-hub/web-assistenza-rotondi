@@ -271,15 +271,15 @@ body { background:var(--dark); color:var(--text); font-family:'DM Sans',sans-ser
     <div class="cond-box">
       <h3 id="c-info-title">Informativa sul servizio</h3>
       <div class="cond-row">
-        <div class="cond-icon">⚠️</div>
+        <div class="cond-icon" style="color:#f0ad4e;font-size:22px;min-width:28px">!</div>
         <div class="cond-text" id="c-paid"></div>
       </div>
       <div class="cond-row">
-        <div class="cond-icon">✅</div>
+        <div class="cond-icon" style="color:#2ea043;font-size:22px;min-width:28px">&#10003;</div>
         <div class="cond-text" id="c-warranty"></div>
       </div>
       <div class="cond-row">
-        <div class="cond-icon">💶</div>
+        <div class="cond-icon" style="color:#c9a84c;font-size:22px;min-width:28px">&#8364;</div>
         <div class="cond-text" id="c-charge"></div>
       </div>
     </div>
@@ -420,7 +420,7 @@ const T = {
     'c-sub':'Rotondi Group Roma — Leggi le condizioni prima di procedere',
     'c-info-title':'Informativa sul servizio',
     'c-paid':'L\'assistenza tecnica è un <strong>servizio a pagamento</strong>, anche se il prodotto è <strong>in garanzia</strong>.',
-    'c-warranty':'In garanzia vengono riconosciute solo le <strong>parti di ricambio difettose</strong> (sostituzione senza costo).',
+    'c-warranty':'In garanzia vengono riconosciute solo le <b>parti di ricambio difettose</b> (sostituzione senza costo).',
     'c-charge':'<strong>Sempre a carico del cliente:</strong> Manodopera · Spostamento tecnico · Costo chiamata',
     'c-zone1':'Zona di Roma','c-zone2':'Fuori Roma (Latina, Frosinone, Rieti, Viterbo...)',
     'c-r1l':'Uscita + 1 ora lavoro','c-r2l':'Ore successive',
@@ -449,9 +449,9 @@ const T = {
     'c-title':'TECHNICAL<br><span>ASSISTANCE</span>',
     'c-sub':'Rotondi Group Roma — Read the conditions before proceeding',
     'c-info-title':'Service information',
-    'c-paid':'&#9888; Technical assistance is a <strong>paid service</strong>, even if the product is <strong>under warranty</strong>.',
-    'c-warranty':'&#10003; Under warranty only <strong>defective spare parts</strong> are replaced (no cost).',
-    'c-charge':'&#128182; <strong>Always charged to customer:</strong> Labour &middot; Technician travel &middot; Call-out fee',
+    'c-paid':'Technical assistance is a <b>paid service</b>, even if the product is <b>under warranty</b>.',
+    'c-warranty':'Under warranty only <b>defective spare parts</b> are replaced (no cost).',
+    'c-charge':'<b>Always charged to customer:</b> Labour - Technician travel - Call-out fee',
     'c-zone1':'Rome area','c-zone2':'Outside Rome',
     'c-r1l':'Call-out + 1h work','c-r2l':'Additional hours',
     'c-r3l':'Travel km','c-r4l':'Travel hours','c-r5l':'Work hours',
@@ -479,9 +479,9 @@ const T = {
     'c-title':'প্রযুক্তিগত<br><span>সহায়তা</span>',
     'c-sub':'রোটোন্ডি গ্রুপ রোমা — এগিয়ে যাওয়ার আগে শর্তাবলী পড়ুন',
     'c-info-title':'সেবার তথ্য',
-    'c-paid':'&#9888; প্রযুক্তিগত সহায়তা একটি <strong>পেইড সার্ভিস</strong>, এমনকি পণ্যটি <strong>ওয়ারেন্টিতে</strong> থাকলেও।',
-    'c-warranty':'&#10003; ওয়ারেন্টিতে শুধু <strong>ত্রুটিপূর্ণ যন্ত্রাংশ</strong> বিনামূল্যে প্রতিস্থাপন করা হয়।',
-    'c-charge':'&#128182; <strong>সর্বদা গ্রাহকের খরচ:</strong> শ্রম &middot; যাতায়াত &middot; কল চার্জ',
+    'c-paid':'প্রযুক্তিগত সহায়তা একটি <b>পেইড সার্ভিস</b>, এমনকি পণ্যটি <b>ওয়ারেন্টিতে</b> থাকলেও।',
+    'c-warranty':'ওয়ারেন্টিতে শুধু <b>ত্রুটিপূর্ণ যন্ত্রাংশ</b> বিনামূল্যে প্রতিস্থাপন করা হয়।',
+    'c-charge':'<b>সর্বদা গ্রাহকের খরচ:</b> শ্রম - যাতায়াত - কল চার্জ',
     'c-zone1':'রোমা এলাকা','c-zone2':'রোমার বাইরে',
     'c-r1l':'আসা + ১ ঘণ্টা','c-r2l':'অতিরিক্ত ঘণ্টা',
     'c-r3l':'যাতায়াত কিমি','c-r4l':'ভ্রমণ সময়','c-r5l':'কাজের সময়',
@@ -509,9 +509,9 @@ const T = {
     'c-title':'技术<br><span>援助</span>',
     'c-sub':'罗通迪集团罗马 — 继续前请阅读条款',
     'c-info-title':'服务信息',
-    'c-paid':'&#9888; 技术援助是<strong>付费服务</strong>，即使产品<strong>在保修期内</strong>也是如此。',
-    'c-warranty':'&#10003; 保修期内仅免费更换<strong>有缺陷的零件</strong>。',
-    'c-charge':'&#128182; <strong>始终由客户承担：</strong>人工费 &middot; 差旅费 &middot; 上门费',
+    'c-paid':'技术援助是<b>付费服务</b>，即使产品<b>在保修期内</b>也是如此。',
+    'c-warranty':'保修期内仅免费更换<b>有缺陷的零件</b>。',
+    'c-charge':'<b>始终由客户承担：</b>人工费 - 差旅费 - 上门费',
     'c-zone1':'罗马地区','c-zone2':'罗马以外地区',
     'c-r1l':'上门费+1小时','c-r2l':'额外每小时',
     'c-r3l':'差旅公里','c-r4l':'路途时间','c-r5l':'工作时间',
@@ -539,9 +539,9 @@ const T = {
     'c-title':'المساعدة<br><span>التقنية</span>',
     'c-sub':'روتوندي جروب روما — اقرأ الشروط قبل المتابعة',
     'c-info-title':'معلومات الخدمة',
-    'c-paid':'&#9888; المساعدة التقنية <strong>خدمة مدفوعة</strong>، حتى لو كان المنتج <strong>تحت الضمان</strong>.',
-    'c-warranty':'&#10003; الضمان يشمل فقط استبدال <strong>قطع الغيار المعيبة</strong> مجاناً.',
-    'c-charge':'&#128182; <strong>دائماً على حساب العميل:</strong> أجرة العمل &middot; التنقل &middot; رسوم الزيارة',
+    'c-paid':'المساعدة التقنية <b>خدمة مدفوعة</b>، حتى لو كان المنتج <b>تحت الضمان</b>.',
+    'c-warranty':'الضمان يشمل فقط استبدال <b>قطع الغيار المعيبة</b> مجاناً.',
+    'c-charge':'<b>دائماً على حساب العميل:</b> أجرة العمل - التنقل - رسوم الزيارة',
     'c-zone1':'منطقة روما','c-zone2':'خارج روما',
     'c-r1l':'زيارة + ساعة عمل','c-r2l':'ساعات إضافية',
     'c-r3l':'كيلومترات التنقل','c-r4l':'ساعات السفر','c-r5l':'ساعات العمل',
