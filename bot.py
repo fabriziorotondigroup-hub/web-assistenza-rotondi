@@ -1037,6 +1037,156 @@ async def gestisci_fascia(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e: log.error(f"Messaggio cliente: {e}")
 
+# ── CHIAMATE WEB (email al cliente) ─────────────────
+WEB_DB_PATH = "web_assistenza.db"
+
+FASCE_IT = {
+    "entro12": "Entro le 12:00",
+    "entro18": "Entro le 18:00",
+    "giornata": "In giornata",
+    "domani": "Entro domani",
+    "programma": "Da programmare"
+}
+
+async def gestisci_wfascia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parti = query.data.split("_")
+    # wfascia_PROTOCOLLO_fascia
+    protocollo = parti[1]
+    fascia_key  = parti[2]
+    fascia_it   = FASCE_IT.get(fascia_key, fascia_key)
+
+    tid    = query.from_user.id
+    t_nome = f"{query.from_user.first_name or ''} {query.from_user.last_name or ''}".strip()
+    tecnico_db = get_tecnico(tid)
+    nome_finale = tecnico_db["nome"] if tecnico_db else t_nome
+    if not tecnico_db: registra_tecnico(tid, t_nome)
+
+    # Leggi richiesta web dal database
+    try:
+        import sqlite3 as _sq
+        with _sq.connect(WEB_DB_PATH) as conn:
+            r = conn.execute(
+                "SELECT protocollo,nome,indirizzo,telefono,email,marca,modello,problema,stato,lingua FROM richieste_web WHERE protocollo=?",
+                (protocollo,)
+            ).fetchone()
+    except Exception as e:
+        log.error(f"Web DB error: {e}")
+        await query.answer("⚠️ Richiesta non trovata.", show_alert=True); return
+
+    if not r:
+        await query.answer("⚠️ Richiesta non trovata.", show_alert=True); return
+    if r[8] == "assegnata":
+        await query.answer("⚠️ Già assegnata!", show_alert=True); return
+
+    # Aggiorna stato nel DB web
+    try:
+        with _sq.connect(WEB_DB_PATH) as conn:
+            conn.execute(
+                "UPDATE richieste_web SET stato=?, tecnico=?, fascia=? WHERE protocollo=?",
+                ("assegnata", nome_finale, fascia_it, protocollo)
+            )
+            conn.commit()
+    except Exception as e:
+        log.error(f"Web DB update error: {e}")
+
+    nome_cliente = r[1]
+    email_cliente = r[4]
+    lingua = r[9] if r[9] else "it"
+
+    # Aggiorna messaggio nel gruppo
+    await query.edit_message_text(
+        f"✅ *RICHIESTA WEB #{protocollo} — ASSEGNATA*\n{'─'*30}\n"
+        f"👤 *Cliente:* {nome_cliente}\n"
+        f"📍 *Indirizzo:* {r[2]}\n"
+        f"🔧 *Problema:* {r[7]}\n{'─'*30}\n"
+        f"👨\u200d🔧 *Tecnico:* {nome_finale}\n"
+        f"⏰ *Intervento:* {fascia_it}",
+        parse_mode="Markdown"
+    )
+
+    # Notifica back office
+    for bo_id in BACKOFFICE_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=bo_id,
+                text=(f"✅ *Richiesta WEB {protocollo} assegnata*\n\n"
+                      f"👤 {nome_cliente}\n👨\u200d🔧 Tecnico: {nome_finale}\n⏰ {fascia_it}"),
+                parse_mode="Markdown"
+            )
+        except: pass
+
+    # Manda EMAIL al cliente web
+    SMTP_HOST_W = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    SMTP_PORT_W = int(os.environ.get("SMTP_PORT", "587"))
+    SMTP_USER_W = os.environ.get("SMTP_USER", "")
+    SMTP_PASS_W = os.environ.get("SMTP_PASS", "")
+    SMTP_FROM_W = os.environ.get("SMTP_FROM", "")
+
+    SOGGETTI = {
+        "it": f"Rotondi Group Roma — Tecnico assegnato #{protocollo}",
+        "en": f"Rotondi Group Roma — Technician assigned #{protocollo}",
+        "bn": f"রোটোন্ডি গ্রুপ রোমা — টেকনিশিয়ান নিযুক্ত #{protocollo}",
+        "zh": f"罗通迪集团罗马 — 技术人员已分配 #{protocollo}",
+        "ar": f"روتوندي جروب روما — تم تعيين الفني #{protocollo}"
+    }
+    CORPI = {
+        "it": f"""<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
+<div style="background:#0d0d14;padding:24px;text-align:center;border-radius:8px 8px 0 0">
+  <h1 style="color:#fff;font-size:20px;margin:0">ROTONDI GROUP ROMA</h1>
+  <p style="color:#c9a84c;margin:4px 0 0;font-size:13px">ASSISTENZA TECNICA</p>
+</div>
+<div style="background:#fff;padding:24px;border-radius:0 0 8px 8px">
+  <h2 style="color:#1a1a2e;font-size:18px">👨‍🔧 Tecnico assegnato!</h2>
+  <p>Gentile <b>{nome_cliente}</b>,<br>un tecnico è stato assegnato alla sua richiesta.</p>
+  <div style="background:#f5f5f5;border-radius:8px;padding:16px;margin:16px 0">
+    <p style="margin:0 0 8px;font-size:13px;color:#888">Protocollo: <b>{protocollo}</b></p>
+    <p style="margin:0 0 8px;font-size:15px"><b>Tecnico:</b> {nome_finale}</p>
+    <p style="margin:0;font-size:15px"><b>Orario intervento:</b> {fascia_it}</p>
+  </div>
+  <p style="color:#555;font-size:14px">Per informazioni contatti l'ufficio:<br>
+  <b>+39 06 41400617</b></p>
+  <p style="color:#888;font-size:13px;margin-top:16px">Per annullare: <b>+39 06 41 40 0514</b></p>
+</div></div>""",
+        "en": f"""<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
+<div style="background:#0d0d14;padding:24px;text-align:center;border-radius:8px 8px 0 0">
+  <h1 style="color:#fff;font-size:20px;margin:0">ROTONDI GROUP ROMA</h1>
+  <p style="color:#c9a84c;margin:4px 0 0;font-size:13px">TECHNICAL ASSISTANCE</p>
+</div>
+<div style="background:#fff;padding:24px;border-radius:0 0 8px 8px">
+  <h2 style="color:#1a1a2e;font-size:18px">👨‍🔧 Technician assigned!</h2>
+  <p>Dear <b>{nome_cliente}</b>,<br>a technician has been assigned to your request.</p>
+  <div style="background:#f5f5f5;border-radius:8px;padding:16px;margin:16px 0">
+    <p style="margin:0 0 8px;font-size:13px;color:#888">Protocol: <b>{protocollo}</b></p>
+    <p style="margin:0 0 8px;font-size:15px"><b>Technician:</b> {nome_finale}</p>
+    <p style="margin:0;font-size:15px"><b>Intervention time:</b> {fascia_it}</p>
+  </div>
+  <p style="color:#555;font-size:14px">For information contact the office:<br><b>+39 06 41400617</b></p>
+  <p style="color:#888;font-size:13px;margin-top:16px">To cancel: <b>+39 06 41 40 0514</b></p>
+</div></div>"""
+    }
+
+    if email_cliente and SMTP_USER_W and SMTP_PASS_W:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        try:
+            corpo = CORPI.get(lingua, CORPI["en"])
+            soggetto = SOGGETTI.get(lingua, SOGGETTI["en"])
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = soggetto
+            msg["From"]    = SMTP_FROM_W
+            msg["To"]      = email_cliente
+            msg.attach(MIMEText(corpo, "html"))
+            with smtplib.SMTP(SMTP_HOST_W, SMTP_PORT_W) as s:
+                s.starttls()
+                s.login(SMTP_USER_W, SMTP_PASS_W)
+                s.sendmail(SMTP_FROM_W, email_cliente, msg.as_string())
+            log.info(f"Email inviata a {email_cliente} per {protocollo}")
+        except Exception as e:
+            log.error(f"Email web error: {e}")
+
 # ── DA PROGRAMMARE ───────────────────────────────
 def genera_keyboard_date(cid):
     oggi = datetime.now()
@@ -1742,6 +1892,7 @@ def main():
     app.add_handler(conv)
     app.add_handler(conv_registrami)
     app.add_handler(CallbackQueryHandler(gestisci_fascia,            pattern=r"^fascia_"))
+    app.add_handler(CallbackQueryHandler(gestisci_wfascia,           pattern=r"^wfascia_"))
     app.add_handler(CallbackQueryHandler(gestisci_programma,         pattern=r"^programma_"))
     app.add_handler(CallbackQueryHandler(gestisci_data,              pattern=r"^pdata_"))
     app.add_handler(CallbackQueryHandler(gestisci_ora,               pattern=r"^pora_"))
