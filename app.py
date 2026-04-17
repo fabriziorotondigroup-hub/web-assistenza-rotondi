@@ -666,7 +666,9 @@ def stato(protocollo):
     if not r: return jsonify({"ok": False, "error": "Not found"})
     return jsonify({"ok": True, "protocollo": r[0], "nome": r[1], "stato": r[2], "data": r[3]})
 
+# Inizializza DB all'avvio (funziona sia con gunicorn che direttamente)
+init_db()
+
 if __name__ == '__main__':
-    init_db()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
