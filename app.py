@@ -65,6 +65,7 @@ CONDIZIONI_EN_DEFAULT = (
 )
 
 
+# ── DATABASE ──────────────────────────────────────────────────────────────────
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -105,6 +106,7 @@ def get_tariffe():
     return {k: float(get_config(f"tariffa_{k}", v)) for k,v in TARIFFE_DEFAULT.items()}
 
 
+# ── PREVENTIVO ────────────────────────────────────────────────────────────────
 def calcola_preventivo(indirizzo_cliente):
     try:
         import requests as rq
@@ -131,6 +133,7 @@ def calcola_preventivo(indirizzo_cliente):
         app.logger.error(f"Maps: {e}"); return None
 
 
+# ── TELEGRAM ──────────────────────────────────────────────────────────────────
 def tg_send(testo, keyboard=None):
     try:
         import requests as rq
@@ -157,6 +160,8 @@ def bo_notify(testo):
                     json={"chat_id":i,"text":testo,"parse_mode":"Markdown"}, timeout=10)
     except Exception as e: app.logger.error(f"BO: {e}")
 
+
+# ── EMAIL ─────────────────────────────────────────────────────────────────────
 def send_email(to, subject, html):
     if not (to and SMTP_U and SMTP_P): return
     try:
@@ -180,9 +185,12 @@ def email_ricezione(email, nome, proto, lingua):
 <div style="background:#f8f8f8;border-radius:8px;padding:16px;margin:20px 0;border-left:4px solid #0d0d14">
 <p style="color:#666;font-size:13px;margin:0 0 4px">Numero protocollo</p>
 <p style="font-size:24px;font-weight:bold;color:#0d0d14;margin:0">{proto}</p></div>
-<p>A breve ricevera' una email con la proposta di appuntamento.</p>
+<p>A breve ricevera' una email con la proposta di appuntamento da accettare o rifiutare.</p>
 <div style="background:#fff3cd;border-radius:8px;padding:12px;margin-top:16px">
-<p style="margin:0;font-size:13px">Per annullare: <b>+39 06 41 40 0514</b></p></div>
+<p style="margin:0;font-size:13px">Per annullare urgentemente: <b>+39 06 41 40 0514</b></p></div>
+<p style="color:#666;font-size:13px;margin-top:20px">Ufficio Roma: +39 06 41400617</p>
+<p style="color:#999;font-size:11px;border-top:1px solid #eee;padding-top:16px;margin-top:20px">
+Rotondi Group Srl - Via F.lli Rosselli 14/16, 20019 Settimo Milanese (MI)</p>
 </div></div>"""
     send_email(email, s, h)
 
@@ -191,34 +199,41 @@ def email_proposta(email, nome, proto, tecnico, data_ora, lingua):
     link_no = f"{BASE_URL}/proposta/{proto}/rifiuta"
     s = {"it":f"Rotondi Group Roma - Proposta appuntamento #{proto}",
          "en":f"Rotondi Group Roma - Appointment proposal #{proto}"}.get(lingua,f"#{proto}")
-    btn_si = "Accetto" if lingua=="it" else "Accept"
-    btn_no = "Rifiuto" if lingua=="it" else "Decline"
-    titolo = "Proposta di Appuntamento" if lingua=="it" else "Appointment Proposal"
-    testo1 = f"Il tecnico <b>{tecnico}</b> e' disponibile il:" if lingua=="it" else f"Technician <b>{tecnico}</b> is available on:"
+    btn_si  = "Accetto"  if lingua=="it" else "Accept"
+    btn_no  = "Rifiuto"  if lingua=="it" else "Decline"
+    titolo  = "Proposta di Appuntamento" if lingua=="it" else "Appointment Proposal"
+    intro   = f"Il tecnico <b>{tecnico}</b> e' disponibile il:" if lingua=="it" else f"Technician <b>{tecnico}</b> is available on:"
+    avviso  = "La preghiamo di rispondere entro 24 ore. Se non risponde, la richiesta tornera' disponibile per altri tecnici." if lingua=="it" else "Please respond within 24 hours."
+    contatti= "Ufficio Roma: <b>+39 06 41400617</b> — Per annullare: <b>+39 06 41 40 0514</b>" if lingua=="it" else "Info: <b>+39 06 41400617</b>"
     h = f"""<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
 <div style="background:#0d0d14;padding:24px;text-align:center;border-radius:8px 8px 0 0">
 <h1 style="color:#fff;font-size:22px;margin:0">ROTONDI GROUP ROMA</h1>
 <p style="color:#aaa;font-size:13px;margin:4px 0 0">Assistenza Tecnica Macchinari</p></div>
 <div style="background:#fff;padding:32px;border-radius:0 0 8px 8px">
 <h2 style="color:#0d0d14">{titolo}</h2>
-<p>Gentile <b>{nome}</b>,</p><p>{testo1}</p>
-<div style="background:#f0f8ff;border-radius:10px;padding:20px;margin:20px 0;text-align:center;border:2px solid #0d0d14">
+<p>Gentile <b>{nome}</b>,</p><p>{intro}</p>
+<div style="background:#f0f8ff;border-radius:10px;padding:20px;margin:20px 0;
+text-align:center;border:2px solid #0d0d14">
 <p style="font-size:13px;color:#666;margin:0 0 8px">Data e ora proposta</p>
 <p style="font-size:28px;font-weight:bold;color:#0d0d14;margin:0">{data_ora}</p></div>
-<p style="font-size:13px;color:#666"><b>Protocollo:</b> {proto}</p>
+<p style="font-size:13px;color:#666;margin-bottom:6px"><b>Protocollo:</b> {proto}</p>
+<p style="color:#888;font-size:13px;margin:12px 0">{avviso}</p>
 <table style="width:100%;border-collapse:collapse;margin:24px 0"><tr>
 <td style="padding:8px;text-align:center">
-<a href="{link_si}" style="background:#4caf50;color:#fff;padding:18px 40px;border-radius:10px;
-text-decoration:none;font-size:20px;font-weight:700;display:inline-block">✅ {btn_si}</a></td>
+<a href="{link_si}" style="background:#4caf50;color:#fff;padding:18px 40px;
+border-radius:10px;text-decoration:none;font-size:20px;font-weight:700;
+display:inline-block">✅ {btn_si}</a></td>
 <td style="padding:8px;text-align:center">
-<a href="{link_no}" style="background:#e53935;color:#fff;padding:18px 40px;border-radius:10px;
-text-decoration:none;font-size:20px;font-weight:700;display:inline-block">❌ {btn_no}</a></td>
-</tr></table>
+<a href="{link_no}" style="background:#e53935;color:#fff;padding:18px 40px;
+border-radius:10px;text-decoration:none;font-size:20px;font-weight:700;
+display:inline-block">❌ {btn_no}</a></td></tr></table>
 <p style="font-size:11px;color:#bbb;text-align:center">
 Se i pulsanti non funzionano:<br>Accetta: {link_si}<br>Rifiuta: {link_no}</p>
 <div style="background:#fff3cd;border-radius:8px;padding:12px;margin-top:20px">
-<p style="margin:0;font-size:13px">Ufficio Roma: <b>+39 06 41400617</b> — Annullare: <b>+39 06 41 40 0514</b></p>
-</div></div></div>"""
+<p style="margin:0;font-size:13px">{contatti}</p></div>
+<p style="color:#999;font-size:11px;border-top:1px solid #eee;padding-top:16px;margin-top:20px">
+Rotondi Group Srl - Via F.lli Rosselli 14/16, 20019 Settimo Milanese (MI)</p>
+</div></div>"""
     send_email(email, s, h)
 
 def email_esito(email, nome, proto, tecnico, data_ora, lingua, ok):
@@ -238,7 +253,7 @@ def email_esito(email, nome, proto, tecnico, data_ora, lingua, ok):
 <p style="color:#444;margin:8px 0 0">Tecnico: <b>{tecnico}</b></p></div>
 <div style="background:#fff3cd;border-radius:8px;padding:12px">
 <p style="margin:0;font-size:13px">Ufficio Roma: <b>+39 06 41400617</b><br>
-Annullare: <b>+39 06 41 40 0514</b></p></div></div></div>"""
+Per annullare: <b>+39 06 41 40 0514</b></p></div></div></div>"""
     else:
         s = {"it":f"Rotondi Group Roma - Proposta rifiutata #{proto}",
              "en":f"Rotondi Group Roma - Proposal declined #{proto}"}.get(lingua,f"#{proto}")
@@ -247,28 +262,37 @@ Annullare: <b>+39 06 41 40 0514</b></p></div></div></div>"""
 <h1 style="color:#fff;font-size:22px;margin:0">ROTONDI GROUP ROMA</h1></div>
 <div style="background:#fff;padding:32px;border-radius:0 0 8px 8px">
 <h2 style="color:#0d0d14">Proposta rifiutata</h2>
-<p>Gentile <b>{nome}</b>, la Sua richiesta e' ancora aperta. Un altro tecnico la contatterà a breve.</p>
+<p>Gentile <b>{nome}</b>, la Sua richiesta e' ancora aperta.<br>
+Un altro tecnico la contatterà a breve con una nuova proposta.</p>
 <div style="background:#fff3cd;border-radius:8px;padding:12px;margin-top:16px">
 <p style="margin:0;font-size:13px">Per info: <b>+39 06 41400617</b></p>
 </div></div></div>"""
     send_email(email, s, h)
 
+
+# ── PAGINA RISPOSTA ───────────────────────────────────────────────────────────
 def pagina(tipo, proto, tecnico="", data_ora="", lingua="it"):
     cfg = {
-        "accettata":    ("#4caf50","🎉","Appuntamento Confermato!",
-                         f"Il tecnico <b>{tecnico}</b> interverr&agrave; il:<br><br>"
-                         f"<b style='font-size:22px;color:#2e7d32'>{data_ora}</b><br><br>"
-                         f"Ufficio Roma: <b>+39 06 41400617</b><br>Annullare: <b>+39 06 41 40 0514</b>"),
-        "rifiutata":    ("#ff9800","↩️","Proposta Rifiutata",
-                         "La Sua richiesta &egrave; ancora aperta.<br><br>"
-                         "Un altro tecnico la contatter&agrave; a breve.<br><br>"
-                         "Per info: <b>+39 06 41400617</b>"),
-        "gia_confermata":("#4caf50","✅","Gi&agrave; Confermato",
-                          f"Appuntamento gi&agrave; confermato.<br>Data: <b>{data_ora}</b><br>Tecnico: <b>{tecnico}</b>"),
-        "gia_rifiutata": ("#888","ℹ️","Gi&agrave; Elaborata","Questa proposta &egrave; gi&agrave; stata elaborata."),
-        "non_trovata":   ("#e53935","⚠️","Non trovata",f"Protocollo <b>{proto}</b> non trovato."),
-        "non_valida":    ("#e53935","⚠️","Link non valido","Questo link non &egrave; pi&ugrave; valido."),
-        "errore":        ("#e53935","❌","Errore","Contatta l'ufficio: +39 06 41400617"),
+        "accettata":     ("#4caf50","🎉","Appuntamento Confermato!",
+                          f"Il tecnico <b>{tecnico}</b> interverr&agrave; il:<br><br>"
+                          f"<b style='font-size:22px;color:#2e7d32'>{data_ora}</b><br><br>"
+                          f"Ufficio Roma: <b>+39 06 41400617</b><br>"
+                          f"Per annullare: <b>+39 06 41 40 0514</b>"),
+        "rifiutata":     ("#ff9800","↩️","Proposta Rifiutata",
+                          "La Sua richiesta &egrave; ancora aperta.<br><br>"
+                          "Un altro tecnico la contatter&agrave; a breve.<br><br>"
+                          "Per info: <b>+39 06 41400617</b>"),
+        "gia_confermata":(  "#4caf50","✅","Gi&agrave; Confermato",
+                          f"Appuntamento gi&agrave; confermato.<br>"
+                          f"Data: <b>{data_ora}</b><br>Tecnico: <b>{tecnico}</b>"),
+        "gia_rifiutata": ("#888","ℹ️","Gi&agrave; Elaborata",
+                          "Questa proposta &egrave; gi&agrave; stata elaborata."),
+        "non_trovata":   ("#e53935","⚠️","Non trovata",
+                          f"Protocollo <b>{proto}</b> non trovato."),
+        "non_valida":    ("#e53935","⚠️","Link non valido",
+                          "Questo link non &egrave; pi&ugrave; valido."),
+        "errore":        ("#e53935","❌","Errore",
+                          "Contatta l'ufficio: +39 06 41400617"),
     }
     c=cfg.get(tipo,cfg["errore"]); col,ico,tit,txt=c
     return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -278,21 +302,24 @@ def pagina(tipo, proto, tecnico="", data_ora="", lingua="it"):
 body{{font-family:'Segoe UI',Arial,sans-serif;background:#f0f0f0;min-height:100vh}}
 .h{{background:#0d0d14;color:#fff;padding:18px;text-align:center}}
 .h h1{{font-size:18px;letter-spacing:1px}}
-.w{{display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 58px);padding:24px 16px}}
-.b{{background:#fff;border-radius:16px;padding:40px 28px;max-width:460px;width:100%;
-text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.1)}}
+.w{{display:flex;align-items:center;justify-content:center;
+min-height:calc(100vh - 58px);padding:24px 16px}}
+.b{{background:#fff;border-radius:16px;padding:40px 28px;max-width:460px;
+width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.1)}}
 .bar{{height:5px;background:{col};border-radius:3px;margin-bottom:28px}}
-.ico{{font-size:54px;margin-bottom:14px}}h2{{font-size:22px;color:{col};margin-bottom:12px}}
+.ico{{font-size:54px;margin-bottom:14px}}
+h2{{font-size:22px;color:{col};margin-bottom:12px}}
 .proto{{font-size:12px;color:#999;background:#f5f5f5;padding:5px 14px;
 border-radius:20px;display:inline-block;margin-bottom:18px}}
 p{{font-size:14px;color:#444;line-height:1.8}}</style></head>
 <body><div class="h"><h1>ROTONDI GROUP ROMA</h1></div>
 <div class="w"><div class="b">
 <div class="bar"></div><div class="ico">{ico}</div><h2>{tit}</h2>
-<div class="proto">Protocollo: <strong>{proto}</strong></div><p>{txt}</p>
-</div></div></body></html>"""
+<div class="proto">Protocollo: <strong>{proto}</strong></div>
+<p>{txt}</p></div></div></body></html>"""
 
 
+# ── ROUTES ────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
     ci=get_config("condizioni_it",CONDIZIONI_IT_DEFAULT)
@@ -302,13 +329,15 @@ def index():
         condizioni_it_js=json.dumps(ci),
         condizioni_en_js=json.dumps(ce))
 
+
 @app.route("/calcola-preventivo", methods=["POST"])
 def route_prev():
     data=request.get_json(force=True)
-    ind=data.get("indirizzo","").strip()
+    ind=(data.get("indirizzo","") or "").strip()
     if not ind: return jsonify({"error":"mancante"}),400
     p=calcola_preventivo(ind)
     return jsonify(p) if p else jsonify({"error":"errore"}),200
+
 
 @app.route("/invia", methods=["POST"])
 def route_invia():
@@ -319,7 +348,7 @@ def route_invia():
         fm = request.files.get('foto_macchina')  if is_mp else None
 
         proto = "RG"+datetime.now().strftime("%Y%m%d%H%M%S")+uuid.uuid4().hex[:4].upper()
-        via=( d.get("via","") or "").strip()
+        via=(d.get("via","") or "").strip()
         civ=(d.get("civico","") or "").strip()
         cap=(d.get("cap","") or "").strip()
         cit=(d.get("citta","") or "").strip()
@@ -345,7 +374,8 @@ def route_invia():
             try:
                 pv=json.loads(pj)
                 if pv.get("zona")=="outside_gra":
-                    pt=f"\n💰 *Preventivo:* EUR {pv['costo_min']:.2f} + IVA ({pv.get('dist_label','')} — {pv.get('dur_label','')})"
+                    pt=(f"\n💰 *Preventivo:* EUR {pv['costo_min']:.2f} + IVA"
+                        f" ({pv.get('dist_label','')} — {pv.get('dur_label','')})")
                 else:
                     pt=f"\n💰 *Zona Roma (GRA):* EUR {pv.get('costo_min',80):.2f} + IVA"
             except: pass
@@ -379,47 +409,70 @@ def route_invia():
     except Exception as e:
         app.logger.error(f"Errore /invia: {e}"); return jsonify({"error":str(e)}),500
 
+
 @app.route("/proposta/<proto>/accetta")
 def prop_accetta(proto):
     try:
         with sqlite3.connect(DB_PATH) as conn:
-            r=conn.execute("SELECT nome,tecnico,fascia,email,lingua,stato FROM richieste_web WHERE protocollo=?",(proto,)).fetchone()
+            r=conn.execute(
+                "SELECT nome,tecnico,fascia,email,lingua,stato FROM richieste_web WHERE protocollo=?",
+                (proto,)).fetchone()
     except: return pagina("errore",proto)
     if not r: return pagina("non_trovata",proto)
     nome,tec,dt,email,lng,stato=r; lng=lng or "it"
-    if stato=="assegnata": return pagina("gia_confermata",proto,tec,dt,lng)
-    if stato!="in_attesa_conferma": return pagina("non_valida",proto,lingua=lng)
+    if stato=="assegnata":
+        return pagina("gia_confermata",proto,tec,dt,lng)
+    if stato!="in_attesa_conferma":
+        return pagina("non_valida",proto,lingua=lng)
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("UPDATE richieste_web SET stato='assegnata' WHERE protocollo=?",(proto,)); conn.commit()
-    tg_send(f"✅ *RICHIESTA WEB {proto} — CONFERMATA*\n\n👤 {nome}\n👨‍🔧 {tec}\n📅 {dt}")
+        conn.execute("UPDATE richieste_web SET stato='assegnata' WHERE protocollo=?",(proto,))
+        conn.commit()
+    tg_send(f"✅ *RICHIESTA WEB {proto} — CONFERMATA*\n\n"
+            f"👤 {nome}\n👨‍🔧 {tec}\n📅 {dt}")
     bo_notify(f"✅ *Web {proto} CONFERMATA*\n👤 {nome}\n👨‍🔧 {tec}\n📅 {dt}")
     if email: email_esito(email,nome,proto,tec,dt,lng,True)
     return pagina("accettata",proto,tec,dt,lng)
+
 
 @app.route("/proposta/<proto>/rifiuta")
 def prop_rifiuta(proto):
     try:
         with sqlite3.connect(DB_PATH) as conn:
-            r=conn.execute("SELECT nome,tecnico,fascia,email,lingua,stato FROM richieste_web WHERE protocollo=?",(proto,)).fetchone()
+            r=conn.execute(
+                "SELECT nome,tecnico,fascia,email,lingua,stato FROM richieste_web WHERE protocollo=?",
+                (proto,)).fetchone()
     except: return pagina("errore",proto)
     if not r: return pagina("non_trovata",proto)
     nome,tec,dt,email,lng,stato=r; lng=lng or "it"
-    if stato=="aperta": return pagina("gia_rifiutata",proto,lingua=lng)
-    if stato!="in_attesa_conferma": return pagina("non_valida",proto,lingua=lng)
+    if stato=="aperta":
+        return pagina("gia_rifiutata",proto,lingua=lng)
+    if stato!="in_attesa_conferma":
+        return pagina("non_valida",proto,lingua=lng)
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("UPDATE richieste_web SET stato='aperta',tecnico=NULL,fascia=NULL WHERE protocollo=?",(proto,)); conn.commit()
-    tg_send(f"❌ *RICHIESTA WEB {proto} — PROPOSTA RIFIUTATA*\n\n👤 {nome}\nTornata disponibile!",
-            {"inline_keyboard":[[{"text":"🗓 Scegli nuova data e ora","callback_data":f"wfascia|{proto}|start"}]]})
+        conn.execute("""UPDATE richieste_web
+            SET stato='aperta',tecnico=NULL,fascia=NULL WHERE protocollo=?""",(proto,))
+        conn.commit()
+    tg_send(
+        f"❌ *RICHIESTA WEB {proto} — PROPOSTA RIFIUTATA*\n\n"
+        f"👤 {nome}\nLa richiesta e' tornata disponibile!",
+        {"inline_keyboard":[[{"text":"🗓 Scegli nuova data e ora",
+                              "callback_data":f"wfascia|{proto}|start"}]]}
+    )
     bo_notify(f"❌ *Web {proto} RIFIUTATA*\n👤 {nome}\nTornata disponibile")
     if email: email_esito(email,nome,proto,tec,dt,lng,False)
     return pagina("rifiutata",proto,lingua=lng)
 
+
+# ── ADMIN ─────────────────────────────────────────────────────────────────────
 @app.route("/admin", methods=["GET","POST"])
 def admin():
     if request.method=="POST" and "password" in request.form:
-        if request.form["password"]==get_config("admin_pass","rotondi2024"): session["admin"]=True
-        else: return render_template_string(HTML_LOGIN,errore="Password errata")
-    if not session.get("admin"): return render_template_string(HTML_LOGIN,errore="")
+        if request.form["password"]==get_config("admin_pass","rotondi2024"):
+            session["admin"]=True
+        else:
+            return render_template_string(HTML_LOGIN,errore="Password errata")
+    if not session.get("admin"):
+        return render_template_string(HTML_LOGIN,errore="")
     msg=""
     if request.method=="POST":
         for k in TARIFFE_DEFAULT:
@@ -437,24 +490,31 @@ def admin():
     ci=get_config("condizioni_it",CONDIZIONI_IT_DEFAULT)
     ce=get_config("condizioni_en",CONDIZIONI_EN_DEFAULT)
     with sqlite3.connect(DB_PATH) as conn:
-        rr=conn.execute("""SELECT protocollo,nome,indirizzo,telefono,marca,problema,
-            stato,tecnico,fascia,data,lingua FROM richieste_web ORDER BY id DESC LIMIT 50""").fetchall()
-    return render_template_string(HTML_ADMIN,tar=tar,cond_it=ci,cond_en=ce,richieste=rr,msg=msg)
+        rr=conn.execute("""
+            SELECT protocollo,nome,indirizzo,telefono,marca,problema,
+                   stato,tecnico,fascia,data,lingua
+            FROM richieste_web ORDER BY id DESC LIMIT 50""").fetchall()
+    return render_template_string(HTML_ADMIN,
+        tar=tar,cond_it=ci,cond_en=ce,richieste=rr,msg=msg)
 
 @app.route("/admin/logout")
-def admin_logout(): session.pop("admin",None); return redirect("/admin")
+def admin_logout():
+    session.pop("admin",None); return redirect("/admin")
 
 @app.route("/admin/sblocca/<proto>")
 def admin_sblocca(proto):
     if not session.get("admin"): return redirect("/admin")
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("UPDATE richieste_web SET stato='aperta',tecnico=NULL,fascia=NULL WHERE protocollo=?",(proto,)); conn.commit()
+        conn.execute("""UPDATE richieste_web
+            SET stato='aperta',tecnico=NULL,fascia=NULL WHERE protocollo=?""",(proto,))
+        conn.commit()
     return redirect("/admin")
 
 @app.route("/health")
 def health(): return "OK",200
 
 
+# ── HTML FORM ─────────────────────────────────────────────────────────────────
 HTML_FORM = """<!DOCTYPE html>
 <html lang="it">
 <head>
@@ -469,9 +529,10 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
 .header p{font-size:13px;color:#aaa;margin-top:5px}
 .lang-bar{background:#fff;border-bottom:2px solid #eee;padding:12px 16px;
   display:flex;justify-content:center;flex-wrap:wrap;gap:8px}
-.lb{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:25px;
-  border:2px solid #ddd;background:#fff;font-size:14px;font-weight:600;color:#555;
-  cursor:pointer;transition:all .2s;font-family:inherit}
+.lb{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;
+  border-radius:25px;border:2px solid #ddd;background:#fff;
+  font-size:14px;font-weight:600;color:#555;cursor:pointer;
+  transition:all .2s;font-family:inherit}
 .lb:hover{border-color:#333;color:#333}
 .lb.active{background:#0d0d14;border-color:#0d0d14;color:#fff}
 .lb .fl{font-size:20px}
@@ -495,13 +556,13 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
   white-space:pre-wrap;margin-bottom:16px;color:#333}
 .chk-wrap{display:flex;align-items:center;gap:12px;padding:14px 16px;
   background:#e8f5e9;border-radius:10px;margin-bottom:8px;cursor:pointer;
-  border:2px solid #c8e6c9;transition:border .2s}
+  border:2px solid #c8e6c9;transition:border .2s;user-select:none}
 .chk-wrap:hover{border-color:#4caf50}
 .chk-box{width:26px;height:26px;border:2px solid #4caf50;border-radius:6px;
   flex-shrink:0;display:flex;align-items:center;justify-content:center;
   background:#fff;font-size:18px;font-weight:700;transition:all .2s;color:#4caf50}
 .chk-box.on{background:#4caf50;color:#fff}
-.chk-lbl{font-size:14px;color:#1b5e20;font-weight:600;line-height:1.4;user-select:none}
+.chk-lbl{font-size:14px;color:#1b5e20;font-weight:600;line-height:1.4}
 .field{margin-bottom:16px}
 .field label{display:block;font-size:12px;font-weight:700;color:#444;
   margin-bottom:6px;text-transform:uppercase;letter-spacing:0.3px}
@@ -537,8 +598,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
 .prev-nota{font-size:11px;color:#999;margin-top:6px}
 .loading{display:none;text-align:center;padding:12px;font-size:13px;color:#666}
 .spin{display:inline-block;width:18px;height:18px;border:2px solid #ddd;
-  border-top-color:#0d0d14;border-radius:50%;animation:spin .7s linear infinite;
-  vertical-align:middle;margin-right:8px}
+  border-top-color:#0d0d14;border-radius:50%;
+  animation:spin .7s linear infinite;vertical-align:middle;margin-right:8px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .foto-area{border:2px dashed #ccc;border-radius:12px;padding:20px;text-align:center;
   cursor:pointer;transition:all .2s;background:#fafafa;margin-top:6px}
@@ -552,8 +613,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
 .ok-ico{font-size:64px;margin-bottom:18px}
 .ok-wrap h2{font-size:24px;color:#0d0d14;margin-bottom:10px}
 .ok-proto{font-size:20px;font-weight:700;color:#0d0d14;background:#f0f0f0;
-  padding:12px 24px;border-radius:10px;display:inline-block;margin:16px 0;
-  letter-spacing:3px;border:2px solid #ddd}
+  padding:12px 24px;border-radius:10px;display:inline-block;
+  margin:16px 0;letter-spacing:3px;border:2px solid #ddd}
 .ok-wrap p{font-size:14px;color:#555;line-height:1.8;max-width:380px;margin:0 auto}
 .ok-note{background:#e8f5e9;border-radius:10px;padding:14px;margin-top:18px}
 .ok-note p{font-size:13px;color:#1b5e20;font-weight:600}
@@ -608,7 +669,9 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
       <div class="chk-wrap" onclick="togChk('c_gdpr','b_gdpr')">
         <div class="chk-box" id="b_gdpr"></div>
         <input type="checkbox" id="c_gdpr" style="display:none">
-        <span class="chk-lbl" id="t_gdpr_lbl">Accetto il trattamento dei dati personali ai sensi del GDPR</span>
+        <span class="chk-lbl" id="t_gdpr_lbl">
+          Accetto il trattamento dei dati personali ai sensi del GDPR
+        </span>
       </div>
     </div>
 
@@ -618,7 +681,9 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
       <div class="chk-wrap" onclick="togChk('c_cond','b_cond')">
         <div class="chk-box" id="b_cond"></div>
         <input type="checkbox" id="c_cond" style="display:none">
-        <span class="chk-lbl" id="t_cond_lbl">Accetto le condizioni del servizio</span>
+        <span class="chk-lbl" id="t_cond_lbl">
+          Accetto le condizioni del servizio
+        </span>
       </div>
     </div>
     <button class="btn-main" onclick="goStep2()" id="btn1">Continua →</button>
@@ -629,29 +694,38 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
     <div class="card">
       <h2>👤 <span id="t_dati_h">Dati Personali</span></h2>
       <div class="field"><label id="t_nome">Nome e Cognome *</label>
-        <input id="nome" type="text" autocomplete="name" placeholder="Es: Mario Rossi"></div>
+        <input id="nome" type="text" autocomplete="name" placeholder="Es: Mario Rossi">
+      </div>
       <div class="field"><label id="t_email">Email</label>
-        <input id="email" type="email" autocomplete="email" placeholder="nome@email.com"></div>
+        <input id="email" type="email" autocomplete="email" placeholder="nome@email.com">
+      </div>
       <div class="field"><label id="t_tel">Telefono *</label>
-        <input id="tel" type="tel" autocomplete="tel" placeholder="+39 333 1234567"></div>
+        <input id="tel" type="tel" autocomplete="tel" placeholder="+39 333 1234567">
+      </div>
     </div>
 
     <div class="card">
       <h2>📍 <span id="t_ind_h">Indirizzo Intervento</span></h2>
       <div class="field"><label id="t_via">Via / Piazza *</label>
-        <input id="via" type="text" placeholder="Es: Via Roma" autocomplete="address-line1"></div>
+        <input id="via" type="text" placeholder="Es: Via Roma" autocomplete="address-line1">
+      </div>
       <div class="row2">
         <div class="field"><label id="t_civico">N° Civico *</label>
-          <input id="civico" type="text" placeholder="Es: 10"></div>
+          <input id="civico" type="text" placeholder="Es: 10">
+        </div>
         <div class="field"><label id="t_cap">CAP *</label>
-          <input id="cap" type="text" placeholder="Es: 00100" maxlength="5"></div>
+          <input id="cap" type="text" placeholder="Es: 00100" maxlength="5">
+        </div>
       </div>
       <div class="row2">
         <div class="field"><label id="t_citta">Città *</label>
-          <input id="citta" type="text" autocomplete="address-level2" placeholder="Es: Roma"></div>
+          <input id="citta" type="text" autocomplete="address-level2" placeholder="Es: Roma">
+        </div>
         <div class="field"><label id="t_prov">Provincia *</label>
-          <input id="prov" type="text" placeholder="Es: RM" maxlength="2"></div>
+          <input id="prov" type="text" placeholder="Es: RM" maxlength="2">
+        </div>
       </div>
+
       <button class="btn-calc" onclick="calcolaPreventivo()" id="btn_calc">
         📍 Verifica distanza e preventivo
       </button>
@@ -676,37 +750,51 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
       <h2>🏭 <span id="t_mac_h">Dati Macchina</span></h2>
       <div class="row2">
         <div class="field"><label id="t_marca">Marca *</label>
-          <input id="marca" type="text" placeholder="Es: Samsung, LG, Bosch"></div>
+          <input id="marca" type="text" placeholder="Es: Samsung, LG, Bosch">
+        </div>
         <div class="field"><label id="t_modello">Modello</label>
-          <input id="modello" type="text" placeholder="Es: WW90T534"></div>
+          <input id="modello" type="text" placeholder="Es: WW90T534">
+        </div>
       </div>
       <div class="field"><label id="t_seriale">Numero Seriale</label>
-        <input id="seriale" type="text" placeholder="Dalla targhetta del macchinario"></div>
+        <input id="seriale" type="text" placeholder="Dalla targhetta del macchinario">
+      </div>
       <div class="field"><label id="t_prob">Descrivi il Problema *</label>
-        <textarea id="problema" placeholder="Cosa succede? Da quando? Hai già provato qualcosa?"></textarea>
+        <textarea id="problema"
+          placeholder="Cosa succede? Da quando? Hai già provato qualcosa?"></textarea>
       </div>
     </div>
+
     <div class="card">
       <h2>📷 <span id="t_foto_h">Foto (opzionale)</span></h2>
       <div class="field">
         <label id="t_foto_targ">📸 Foto targhetta macchina</label>
-        <div class="foto-area" id="fa_targ" onclick="document.getElementById('fi_targ').click()">
-          <div id="fp_targ"><div class="foto-icon">📸</div>
-          <div class="foto-hint" id="fh_targ">Tocca per aggiungere la foto</div></div>
+        <div class="foto-area" id="fa_targ"
+             onclick="document.getElementById('fi_targ').click()">
+          <div id="fp_targ">
+            <div class="foto-icon">📸</div>
+            <div class="foto-hint" id="fh_targ">Tocca per aggiungere la foto</div>
+          </div>
         </div>
         <input type="file" id="fi_targ" accept="image/*" capture="environment"
-               style="display:none" onchange="mostraFoto(this,'fp_targ','fa_targ','fh_targ')">
+               style="display:none"
+               onchange="mostraFoto(this,'fp_targ','fa_targ','fh_targ')">
       </div>
       <div class="field">
         <label id="t_foto_mac">📷 Foto della macchina</label>
-        <div class="foto-area" id="fa_mac" onclick="document.getElementById('fi_mac').click()">
-          <div id="fp_mac"><div class="foto-icon">📷</div>
-          <div class="foto-hint" id="fh_mac">Tocca per aggiungere la foto</div></div>
+        <div class="foto-area" id="fa_mac"
+             onclick="document.getElementById('fi_mac').click()">
+          <div id="fp_mac">
+            <div class="foto-icon">📷</div>
+            <div class="foto-hint" id="fh_mac">Tocca per aggiungere la foto</div>
+          </div>
         </div>
         <input type="file" id="fi_mac" accept="image/*" capture="environment"
-               style="display:none" onchange="mostraFoto(this,'fp_mac','fa_mac','fh_mac')">
+               style="display:none"
+               onchange="mostraFoto(this,'fp_mac','fa_mac','fh_mac')">
       </div>
     </div>
+
     <button class="btn-main" onclick="invia()" id="btn3">📤 Invia Richiesta</button>
     <button class="btn-back" onclick="goStep2back()" id="t_back2">← Indietro</button>
   </div>
@@ -717,8 +805,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
       <div class="ok-ico">✅</div>
       <h2 id="t_ok_h">Richiesta Inviata!</h2>
       <div class="ok-proto" id="ok_proto"></div>
-      <p id="t_ok_p">Un tecnico <strong>Rotondi Group Roma</strong> ti contatterà a breve
-      con una proposta di appuntamento.<br><br>
+      <p id="t_ok_p">Un tecnico <strong>Rotondi Group Roma</strong> ti contatterà
+      a breve con una proposta di appuntamento.<br><br>
       Riceverai una <strong>email</strong> con i pulsanti
       <strong>✅ Accetto</strong> e <strong>❌ Rifiuto</strong>.</p>
       <div class="ok-note">
@@ -733,7 +821,6 @@ var lang='it', prevData=null;
 var COND_IT={{ condizioni_it_js }};
 var COND_EN={{ condizioni_en_js }};
 
-// Checkbox custom
 function togChk(chkId,boxId){
   var c=document.getElementById(chkId);
   var b=document.getElementById(boxId);
@@ -743,36 +830,46 @@ function togChk(chkId,boxId){
 }
 
 var L={
-  it:{gdpr_h:'Privacy (GDPR)',
+  it:{
+    gdpr_h:'Privacy (GDPR)',
     gdpr_lbl:'Accetto il trattamento dei dati personali ai sensi del GDPR',
-    cond_h:'Condizioni del Servizio',cond_lbl:'Accetto le condizioni del servizio',
+    cond_h:'Condizioni del Servizio',
+    cond_lbl:'Accetto le condizioni del servizio',
     dati_h:'Dati Personali',nome:'Nome e Cognome *',email:'Email',tel:'Telefono *',
     ind_h:'Indirizzo Intervento',via:'Via / Piazza *',civico:'N° Civico *',
     cap:'CAP *',citta:'Città *',prov:'Provincia *',
-    btn_calc:'📍 Verifica distanza e preventivo',calc_lbl:'Calcolo in corso...',
-    prev_h:'💰 Preventivo Indicativo',prev_nota:'Preventivo indicativo per 1h di lavoro + IVA',
+    btn_calc:'📍 Verifica distanza e preventivo',
+    calc_lbl:'Calcolo in corso...',
+    prev_h:'💰 Preventivo Indicativo',
+    prev_nota:'Preventivo indicativo per 1h di lavoro + IVA',
     inside:'Zona Roma (dentro GRA)',outside:'Fuori Roma',
-    mac_h:'Dati Macchina',marca:'Marca *',modello:'Modello',seriale:'Numero Seriale',
-    prob:'Descrivi il Problema *',foto_h:'Foto (opzionale)',
-    foto_targ:'📸 Foto targhetta macchina',foto_mac:'📷 Foto della macchina',
+    mac_h:'Dati Macchina',marca:'Marca *',modello:'Modello',
+    seriale:'Numero Seriale',prob:'Descrivi il Problema *',
+    foto_h:'Foto (opzionale)',
+    foto_targ:'📸 Foto targhetta macchina',
+    foto_mac:'📷 Foto della macchina',
     foto_hint:'Tocca per aggiungere la foto',
     btn1:'Continua →',btn2:'Continua →',btn3:'📤 Invia Richiesta',
     back1:'← Indietro',back2:'← Indietro',
     ok_h:'Richiesta Inviata!',
     ok_p:'Un tecnico <strong>Rotondi Group Roma</strong> ti contatterà a breve con una proposta di appuntamento.<br><br>Riceverai una <strong>email</strong> con i pulsanti <strong>✅ Accetto</strong> e <strong>❌ Rifiuto</strong>.',
     err_consent:'⚠️ Devi accettare privacy e condizioni per continuare',
-    err_campi:'⚠️ Compila tutti i campi obbligatori (*)'},
-  en:{gdpr_h:'Privacy (GDPR)',
+    err_campi:'⚠️ Compila tutti i campi obbligatori (*)'
+  },
+  en:{
+    gdpr_h:'Privacy (GDPR)',
     gdpr_lbl:'I accept the processing of personal data under GDPR',
     cond_h:'Service Conditions',cond_lbl:'I accept the service conditions',
     dati_h:'Personal Details',nome:'Full Name *',email:'Email',tel:'Phone *',
     ind_h:'Service Address',via:'Street *',civico:'Number *',
     cap:'Postal Code *',citta:'City *',prov:'Province *',
     btn_calc:'📍 Check distance & quote',calc_lbl:'Calculating...',
-    prev_h:'💰 Indicative Quote',prev_nota:'Indicative quote for 1h work + VAT',
+    prev_h:'💰 Indicative Quote',
+    prev_nota:'Indicative quote for 1h work + VAT',
     inside:'Rome area (inside GRA)',outside:'Outside Rome',
-    mac_h:'Machine Details',marca:'Brand *',modello:'Model',seriale:'Serial Number',
-    prob:'Describe the Problem *',foto_h:'Photos (optional)',
+    mac_h:'Machine Details',marca:'Brand *',modello:'Model',
+    seriale:'Serial Number',prob:'Describe the Problem *',
+    foto_h:'Photos (optional)',
     foto_targ:'📸 Machine label photo',foto_mac:'📷 Machine photo',
     foto_hint:'Tap to add photo',
     btn1:'Continue →',btn2:'Continue →',btn3:'📤 Send Request',
@@ -780,48 +877,73 @@ var L={
     ok_h:'Request Sent!',
     ok_p:'A <strong>Rotondi Group Roma</strong> technician will contact you shortly.<br><br>You will receive an <strong>email</strong> with <strong>✅ Accept</strong> and <strong>❌ Decline</strong> buttons.',
     err_consent:'⚠️ You must accept privacy and conditions to continue',
-    err_campi:'⚠️ Please fill all required fields (*)'},
-  bn:{gdpr_h:'গোপনীয়তা (GDPR)',gdpr_lbl:'আমি GDPR অনুযায়ী সম্মতি দিচ্ছি',
+    err_campi:'⚠️ Please fill all required fields (*)'
+  },
+  bn:{
+    gdpr_h:'গোপনীয়তা (GDPR)',
+    gdpr_lbl:'আমি GDPR অনুযায়ী সম্মতি দিচ্ছি',
     cond_h:'শর্তাবলী',cond_lbl:'আমি শর্তাবলী গ্রহণ করছি',
     dati_h:'ব্যক্তিগত তথ্য',nome:'পুরো নাম *',email:'ইমেইল',tel:'ফোন *',
-    ind_h:'ঠিকানা',via:'রাস্তা *',civico:'নম্বর *',cap:'পোস্টাল কোড *',
-    citta:'শহর *',prov:'প্রদেশ *',btn_calc:'📍 দূরত্ব যাচাই',calc_lbl:'হিসাব...',
-    prev_h:'💰 আনুমানিক খরচ',prev_nota:'১ ঘণ্টার আনুমানিক + ভ্যাট',
+    ind_h:'ঠিকানা',via:'রাস্তা *',civico:'নম্বর *',
+    cap:'পোস্টাল কোড *',citta:'শহর *',prov:'প্রদেশ *',
+    btn_calc:'📍 দূরত্ব যাচাই',calc_lbl:'হিসাব চলছে...',
+    prev_h:'💰 আনুমানিক খরচ',
+    prev_nota:'১ ঘণ্টার আনুমানিক + ভ্যাট',
     inside:'রোমা (GRA ভেতরে)',outside:'রোমার বাইরে',
-    mac_h:'মেশিন',marca:'ব্র্যান্ড *',modello:'মডেল',seriale:'সিরিয়াল',
-    prob:'সমস্যার বিবরণ *',foto_h:'ছবি (ঐচ্ছিক)',
+    mac_h:'মেশিনের তথ্য',marca:'ব্র্যান্ড *',modello:'মডেল',
+    seriale:'সিরিয়াল নম্বর',prob:'সমস্যার বিবরণ *',
+    foto_h:'ছবি (ঐচ্ছিক)',
     foto_targ:'📸 তারিখফলকের ছবি',foto_mac:'📷 মেশিনের ছবি',
     foto_hint:'ছবি যোগ করতে স্পর্শ করুন',
     btn1:'এগিয়ে যান →',btn2:'এগিয়ে যান →',btn3:'📤 পাঠান',
-    back1:'← পেছনে',back2:'← পেছনে',ok_h:'অনুরোধ পাঠানো হয়েছে!',
-    ok_p:'টেকনিশিয়ান শীঘ্রই যোগাযোগ করবেন।<br><br>বাতিল: <strong>+39 06 41 40 0514</strong>',
-    err_consent:'⚠️ গোপনীয়তা ও শর্তাবলী গ্রহণ করুন',err_campi:'⚠️ সব প্রয়োজনীয় তথ্য পূরণ করুন'},
-  zh:{gdpr_h:'隐私 (GDPR)',gdpr_lbl:'我同意根据GDPR处理个人数据',
+    back1:'← পেছনে',back2:'← পেছনে',
+    ok_h:'অনুরোধ পাঠানো হয়েছে!',
+    ok_p:'একজন টেকনিশিয়ান শীঘ্রই যোগাযোগ করবেন।<br><br>বাতিল: <strong>+39 06 41 40 0514</strong>',
+    err_consent:'⚠️ গোপনীয়তা ও শর্তাবলী গ্রহণ করুন',
+    err_campi:'⚠️ সব প্রয়োজনীয় তথ্য পূরণ করুন'
+  },
+  zh:{
+    gdpr_h:'隐私 (GDPR)',gdpr_lbl:'我同意根据GDPR处理个人数据',
     cond_h:'服务条款',cond_lbl:'我接受服务条款',
     dati_h:'个人信息',nome:'姓名 *',email:'邮箱',tel:'电话 *',
-    ind_h:'服务地址',via:'街道 *',civico:'门牌号 *',cap:'邮政编码 *',
-    citta:'城市 *',prov:'省份代码 *',btn_calc:'📍 验证距离',calc_lbl:'计算中...',
+    ind_h:'服务地址',via:'街道 *',civico:'门牌号 *',
+    cap:'邮政编码 *',citta:'城市 *',prov:'省份代码 *',
+    btn_calc:'📍 验证距离',calc_lbl:'计算中...',
     prev_h:'💰 参考报价',prev_nota:'1小时工作参考报价 + 增值税',
     inside:'罗马市区（GRA内）',outside:'罗马市外',
-    mac_h:'机器信息',marca:'品牌 *',modello:'型号',seriale:'序列号',
-    prob:'描述问题 *',foto_h:'照片（可选）',
-    foto_targ:'📸 铭牌照片',foto_mac:'📷 机器照片',foto_hint:'点击添加照片',
-    btn1:'继续 →',btn2:'继续 →',btn3:'📤 发送',back1:'← 返回',back2:'← 返回',
-    ok_h:'请求已发送！',ok_p:'技术人员将很快联系您。<br><br>取消: <strong>+39 06 41 40 0514</strong>',
-    err_consent:'⚠️ 请接受隐私政策和服务条款',err_campi:'⚠️ 请填写所有必填字段'},
-  ar:{gdpr_h:'الخصوصية (GDPR)',gdpr_lbl:'أوافق على معالجة البيانات وفق GDPR',
+    mac_h:'机器信息',marca:'品牌 *',modello:'型号',
+    seriale:'序列号',prob:'描述问题 *',
+    foto_h:'照片（可选）',
+    foto_targ:'📸 铭牌照片',foto_mac:'📷 机器照片',
+    foto_hint:'点击添加照片',
+    btn1:'继续 →',btn2:'继续 →',btn3:'📤 发送',
+    back1:'← 返回',back2:'← 返回',
+    ok_h:'请求已发送！',
+    ok_p:'技术人员将很快联系您。<br><br>取消: <strong>+39 06 41 40 0514</strong>',
+    err_consent:'⚠️ 请接受隐私政策和服务条款',
+    err_campi:'⚠️ 请填写所有必填字段'
+  },
+  ar:{
+    gdpr_h:'الخصوصية (GDPR)',gdpr_lbl:'أوافق على معالجة البيانات وفق GDPR',
     cond_h:'شروط الخدمة',cond_lbl:'أقبل شروط الخدمة',
     dati_h:'البيانات الشخصية',nome:'الاسم الكامل *',email:'البريد الإلكتروني',tel:'الهاتف *',
-    ind_h:'عنوان الخدمة',via:'الشارع *',civico:'رقم المبنى *',cap:'الرمز البريدي *',
-    citta:'المدينة *',prov:'رمز المحافظة *',btn_calc:'📍 تحقق من المسافة',calc_lbl:'جارٍ الحساب...',
+    ind_h:'عنوان الخدمة',via:'الشارع *',civico:'رقم المبنى *',
+    cap:'الرمز البريدي *',citta:'المدينة *',prov:'رمز المحافظة *',
+    btn_calc:'📍 تحقق من المسافة',calc_lbl:'جارٍ الحساب...',
     prev_h:'💰 عرض سعر تقريبي',prev_nota:'تقريبي لساعة عمل + ضريبة',
     inside:'منطقة روما (داخل GRA)',outside:'خارج روما',
-    mac_h:'بيانات الجهاز',marca:'الماركة *',modello:'الموديل',seriale:'الرقم التسلسلي',
-    prob:'صف المشكلة *',foto_h:'صور (اختياري)',
-    foto_targ:'📸 صورة لوحة الجهاز',foto_mac:'📷 صورة الجهاز',foto_hint:'اضغط لإضافة صورة',
-    btn1:'متابعة →',btn2:'متابعة →',btn3:'📤 إرسال',back1:'← رجوع',back2:'← رجوع',
-    ok_h:'تم إرسال الطلب!',ok_p:'سيتصل بك فني قريباً.<br><br>للإلغاء: <strong>+39 06 41 40 0514</strong>',
-    err_consent:'⚠️ يجب قبول سياسة الخصوصية والشروط',err_campi:'⚠️ يرجى ملء جميع الحقول المطلوبة'}
+    mac_h:'بيانات الجهاز',marca:'الماركة *',modello:'الموديل',
+    seriale:'الرقم التسلسلي',prob:'صف المشكلة *',
+    foto_h:'صور (اختياري)',
+    foto_targ:'📸 صورة لوحة الجهاز',foto_mac:'📷 صورة الجهاز',
+    foto_hint:'اضغط لإضافة صورة',
+    btn1:'متابعة →',btn2:'متابعة →',btn3:'📤 إرسال',
+    back1:'← رجوع',back2:'← رجوع',
+    ok_h:'تم إرسال الطلب!',
+    ok_p:'سيتصل بك فني قريباً.<br><br>للإلغاء: <strong>+39 06 41 40 0514</strong>',
+    err_consent:'⚠️ يجب قبول سياسة الخصوصية والشروط',
+    err_campi:'⚠️ يرجى ملء جميع الحقول المطلوبة'
+  }
 };
 
 function setLang(l){
@@ -830,22 +952,29 @@ function setLang(l){
   document.getElementById('l_'+l).classList.add('active');
   var T=L[l];
   var mp={
-    't_gdpr_h':'gdpr_h','t_gdpr_lbl':'gdpr_lbl','t_cond_h':'cond_h','t_cond_lbl':'cond_lbl',
+    't_gdpr_h':'gdpr_h','t_gdpr_lbl':'gdpr_lbl',
+    't_cond_h':'cond_h','t_cond_lbl':'cond_lbl',
     't_dati_h':'dati_h','t_nome':'nome','t_email':'email','t_tel':'tel',
-    't_ind_h':'ind_h','t_via':'via','t_civico':'civico','t_cap':'cap','t_citta':'citta','t_prov':'prov',
+    't_ind_h':'ind_h','t_via':'via','t_civico':'civico','t_cap':'cap',
+    't_citta':'citta','t_prov':'prov',
     't_calc_lbl':'calc_lbl','t_prev_h':'prev_h','t_prev_nota':'prev_nota',
-    't_mac_h':'mac_h','t_marca':'marca','t_modello':'modello','t_seriale':'seriale','t_prob':'prob',
+    't_mac_h':'mac_h','t_marca':'marca','t_modello':'modello',
+    't_seriale':'seriale','t_prob':'prob',
     't_foto_h':'foto_h','t_foto_targ':'foto_targ','t_foto_mac':'foto_mac',
-    'btn1':'btn1','btn2':'btn2','btn3':'btn3','t_back1':'back1','t_back2':'back2'
+    'btn1':'btn1','btn2':'btn2','btn3':'btn3',
+    't_back1':'back1','t_back2':'back2'
   };
-  for(var id in mp){var el=document.getElementById(id);if(el)el.textContent=T[mp[id]];}
+  for(var id in mp){
+    var el=document.getElementById(id);
+    if(el) el.textContent=T[mp[id]];
+  }
   document.getElementById('btn_calc').textContent=T.btn_calc;
   var h1=document.getElementById('fh_targ');
   var h2=document.getElementById('fh_mac');
-  if(h1)h1.textContent=T.foto_hint;
-  if(h2)h2.textContent=T.foto_hint;
-  if(l==='it')document.getElementById('cond_box').textContent=COND_IT;
-  else if(l==='en')document.getElementById('cond_box').textContent=COND_EN;
+  if(h1) h1.textContent=T.foto_hint;
+  if(h2) h2.textContent=T.foto_hint;
+  if(l==='it') document.getElementById('cond_box').textContent=COND_IT;
+  else if(l==='en') document.getElementById('cond_box').textContent=COND_EN;
   document.getElementById('t_ok_h').textContent=T.ok_h;
   document.getElementById('t_ok_p').innerHTML=T.ok_p;
 }
@@ -860,34 +989,35 @@ function updSteps(n){
 function goStep1(){
   document.getElementById('step2').style.display='none';
   document.getElementById('step1').style.display='';
-  updSteps(1);window.scrollTo(0,0);
+  updSteps(1); window.scrollTo(0,0);
 }
 
 function goStep2(){
-  // Controlla checkbox custom
-  if(!document.getElementById('c_gdpr').checked||
+  if(!document.getElementById('c_gdpr').checked ||
      !document.getElementById('c_cond').checked){
-    alert(L[lang].err_consent);return;
+    alert(L[lang].err_consent); return;
   }
   document.getElementById('step1').style.display='none';
   document.getElementById('step2').style.display='';
-  updSteps(2);window.scrollTo(0,0);
+  updSteps(2); window.scrollTo(0,0);
 }
 
 function goStep2back(){
   document.getElementById('step3').style.display='none';
   document.getElementById('step2').style.display='';
-  updSteps(2);window.scrollTo(0,0);
+  updSteps(2); window.scrollTo(0,0);
 }
 
 function goStep3(){
   var ff=['nome','tel','via','civico','cap','citta','prov'];
   for(var i=0;i<ff.length;i++){
-    if(!document.getElementById(ff[i]).value.trim()){alert(L[lang].err_campi);return;}
+    if(!document.getElementById(ff[i]).value.trim()){
+      alert(L[lang].err_campi); return;
+    }
   }
   document.getElementById('step2').style.display='none';
   document.getElementById('step3').style.display='';
-  updSteps(3);window.scrollTo(0,0);
+  updSteps(3); window.scrollTo(0,0);
 }
 
 function buildInd(){
@@ -901,29 +1031,37 @@ function buildInd(){
 function calcolaPreventivo(){
   var ff=['via','civico','cap','citta','prov'];
   for(var i=0;i<ff.length;i++){
-    if(!document.getElementById(ff[i]).value.trim()){alert(L[lang].err_campi);return;}
+    if(!document.getElementById(ff[i]).value.trim()){
+      alert(L[lang].err_campi); return;
+    }
   }
   document.getElementById('load_p').style.display='block';
   document.getElementById('prev_box').style.display='none';
-  fetch('/calcola-preventivo',{method:'POST',
+  fetch('/calcola-preventivo',{
+    method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({indirizzo:buildInd()})})
+    body:JSON.stringify({indirizzo:buildInd()})
+  })
   .then(function(r){return r.json();})
   .then(function(d){
     document.getElementById('load_p').style.display='none';
-    if(!d||!d.zona)return;
+    if(!d||!d.zona) return;
     prevData=d;
     var box=document.getElementById('prev_box');
     var T=L[lang];
     if(d.zona==='inside_gra'){
       box.className='prev-box prev-inside';
-      document.getElementById('prev_zona').textContent=T.inside+' — '+d.dist_label+' ('+d.dur_label+')';
-      document.getElementById('prev_imp').textContent='EUR '+d.costo_min.toFixed(2)+' + IVA';
+      document.getElementById('prev_zona').textContent=
+        T.inside+' — '+d.dist_label+' ('+d.dur_label+')';
+      document.getElementById('prev_imp').textContent=
+        'EUR '+d.costo_min.toFixed(2)+' + IVA';
       document.getElementById('prev_det').textContent='Uscita + 1h lavoro inclusa';
-    }else{
+    } else {
       box.className='prev-box prev-outside';
-      document.getElementById('prev_zona').textContent=T.outside+' — '+d.dist_label+' ('+d.dur_label+')';
-      document.getElementById('prev_imp').textContent='min. EUR '+d.costo_min.toFixed(2)+' + IVA';
+      document.getElementById('prev_zona').textContent=
+        T.outside+' — '+d.dist_label+' ('+d.dur_label+')';
+      document.getElementById('prev_imp').textContent=
+        'min. EUR '+d.costo_min.toFixed(2)+' + IVA';
       if(d.dettaglio){
         document.getElementById('prev_det').textContent=
           'Km A/R: EUR '+d.dettaglio.costo_km+
@@ -934,11 +1072,14 @@ function calcolaPreventivo(){
     document.getElementById('t_prev_h').textContent=T.prev_h;
     document.getElementById('t_prev_nota').textContent=T.prev_nota;
     box.style.display='block';
-  }).catch(function(){document.getElementById('load_p').style.display='none';});
+  })
+  .catch(function(){
+    document.getElementById('load_p').style.display='none';
+  });
 }
 
 function mostraFoto(inp,pvId,arId,hiId){
-  var f=inp.files[0];if(!f)return;
+  var f=inp.files[0]; if(!f) return;
   var r=new FileReader();
   r.onload=function(e){
     var b=document.getElementById(pvId);
@@ -952,10 +1093,13 @@ function mostraFoto(inp,pvId,arId,hiId){
 function invia(){
   var ff=['nome','tel','marca','problema'];
   for(var i=0;i<ff.length;i++){
-    if(!document.getElementById(ff[i]).value.trim()){alert(L[lang].err_campi);return;}
+    if(!document.getElementById(ff[i]).value.trim()){
+      alert(L[lang].err_campi); return;
+    }
   }
   var btn=document.getElementById('btn3');
-  btn.disabled=true;btn.textContent='⏳ Invio in corso...';
+  btn.disabled=true; btn.textContent='⏳ Invio in corso...';
+
   var fd=new FormData();
   fd.append('nome',     document.getElementById('nome').value.trim());
   fd.append('email',    document.getElementById('email').value.trim());
@@ -971,11 +1115,13 @@ function invia(){
   fd.append('seriale',  document.getElementById('seriale').value.trim());
   fd.append('problema', document.getElementById('problema').value.trim());
   fd.append('lingua',   lang);
-  if(prevData)fd.append('preventivo',JSON.stringify(prevData));
+  if(prevData) fd.append('preventivo',JSON.stringify(prevData));
+
   var ft=document.getElementById('fi_targ').files[0];
   var fm=document.getElementById('fi_mac').files[0];
-  if(ft)fd.append('foto_targhetta',ft);
-  if(fm)fd.append('foto_macchina',fm);
+  if(ft) fd.append('foto_targhetta',ft);
+  if(fm) fd.append('foto_macchina',fm);
+
   fetch('/invia',{method:'POST',body:fd})
   .then(function(r){return r.json();})
   .then(function(d){
@@ -985,10 +1131,19 @@ function invia(){
       document.getElementById('ok_proto').textContent=d.protocollo;
       document.getElementById('t_ok_h').textContent=L[lang].ok_h;
       document.getElementById('t_ok_p').innerHTML=L[lang].ok_p;
-      document.querySelectorAll('.step').forEach(function(s){s.className='step done';});
+      document.querySelectorAll('.step').forEach(function(s){
+        s.className='step done';
+      });
       window.scrollTo(0,0);
-    }else{btn.disabled=false;btn.textContent=L[lang].btn3;alert('Errore. Riprova.');}
-  }).catch(function(){btn.disabled=false;btn.textContent=L[lang].btn3;alert('Errore connessione.');});
+    } else {
+      btn.disabled=false; btn.textContent=L[lang].btn3;
+      alert('Errore invio. Riprova.');
+    }
+  })
+  .catch(function(){
+    btn.disabled=false; btn.textContent=L[lang].btn3;
+    alert('Errore di connessione. Riprova.');
+  });
 }
 </script>
 </body>
@@ -1025,7 +1180,8 @@ button:hover{background:#333}
   </div>
   {% if errore %}<p class="err">{{ errore }}</p>{% endif %}
   <form method="POST">
-    <input type="password" name="password" placeholder="Password amministratore" autofocus>
+    <input type="password" name="password"
+           placeholder="Password amministratore" autofocus>
     <button type="submit">Accedi</button>
   </form>
 </div>
@@ -1056,7 +1212,8 @@ body{font-family:Arial,sans-serif;background:#f0f0f0;color:#222}
 .field label{display:block;font-size:12px;font-weight:700;color:#555;
   margin-bottom:6px;text-transform:uppercase;letter-spacing:0.3px}
 input[type=number],input[type=password],textarea{width:100%;padding:11px 14px;
-  border:2px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;font-family:inherit}
+  border:2px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;
+  font-family:inherit}
 input:focus,textarea:focus{border-color:#0d0d14}
 textarea{resize:vertical;min-height:140px;font-size:13px;line-height:1.7}
 .btn-save{background:#0d0d14;color:#fff;border:none;padding:14px 36px;
@@ -1141,21 +1298,32 @@ a.sblocca:hover{background:#e53935;color:#fff}
           <td style="font-size:12px">{{ r[3] }}</td>
           <td style="font-size:12px"><b>{{ r[4] }}</b></td>
           <td style="max-width:150px;font-size:12px;color:#555">
-            {{ (r[5] or '')[:55] }}{% if r[5] and r[5]|length > 55 %}…{% endif %}</td>
+            {{ (r[5] or '')[:55] }}{% if r[5] and r[5]|length > 55 %}…{% endif %}
+          </td>
           <td>
-            {% if r[6]=='aperta' %}<span class="badge b-open">🟡 Aperta</span>
-            {% elif r[6]=='assegnata' %}<span class="badge b-ass">✅ Assegnata</span>
-            {% elif r[6]=='in_attesa_conferma' %}<span class="badge b-wait">⏳ In attesa</span>
-            {% else %}<span class="badge b-wait">{{ r[6] }}</span>{% endif %}
+            {% if r[6]=='aperta' %}
+              <span class="badge b-open">🟡 Aperta</span>
+            {% elif r[6]=='assegnata' %}
+              <span class="badge b-ass">✅ Assegnata</span>
+            {% elif r[6]=='in_attesa_conferma' %}
+              <span class="badge b-wait">⏳ In attesa</span>
+            {% else %}
+              <span class="badge b-wait">{{ r[6] }}</span>
+            {% endif %}
           </td>
           <td style="font-size:12px">
             {% if r[7] %}<b>{{ r[7] }}</b><br>{% endif %}
-            <span style="color:#888">{{ r[8] or '' }}</span></td>
+            <span style="color:#888">{{ r[8] or '' }}</span>
+          </td>
           <td style="font-size:12px;color:#888">{{ r[9] }}</td>
-          <td>{% if r[6] != 'aperta' %}
+          <td>
+            {% if r[6] != 'aperta' %}
             <a href="/admin/sblocca/{{ r[0] }}" class="sblocca"
-               onclick="return confirm('Sbloccare {{ r[0] }}?')">🔓 Sblocca</a>
-            {% endif %}</td>
+               onclick="return confirm('Sbloccare {{ r[0] }}?')">
+              🔓 Sblocca
+            </a>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </table>
