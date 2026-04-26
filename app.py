@@ -138,10 +138,92 @@ def get_tariffe():
     return {k: float(get_config(f"tariffa_{k}", v)) for k, v in TARIFFE_DEFAULT.items()}
 
 
-def calcola_preventivo(indirizzo_cliente):
+# ── Poligono GPS del GRA (A90) — coordinate in senso orario ─────────────────
+# Circa 80 punti che tracciano il perimetro del Grande Raccordo Anulare di Roma
+GRA_POLYGON = [
+    # Nord-Ovest -> Nord -> Nord-Est
+    (41.9800, 12.3950), (41.9870, 12.4100), (41.9920, 12.4300),
+    (41.9960, 12.4500), (41.9990, 12.4700), (42.0005, 12.4900),
+    (42.0010, 12.5100), (42.0005, 12.5300), (41.9985, 12.5500),
+    (41.9950, 12.5680), (41.9900, 12.5840), (41.9840, 12.5980),
+    # Est
+    (41.9760, 12.6090), (41.9670, 12.6170), (41.9570, 12.6220),
+    (41.9460, 12.6240), (41.9350, 12.6230), (41.9240, 12.6190),
+    (41.9130, 12.6120), (41.9030, 12.6020), (41.8940, 12.5890),
+    # Sud-Est
+    (41.8870, 12.5740), (41.8820, 12.5580), (41.8790, 12.5400),
+    (41.8780, 12.5210), (41.8785, 12.5020), (41.8805, 12.4840),
+    # Sud
+    (41.8840, 12.4660), (41.8740, 12.4600), (41.8650, 12.4560),
+    (41.8560, 12.4530), (41.8490, 12.4490), (41.8440, 12.4430),
+    (41.8410, 12.4350), (41.8400, 12.4260), (41.8410, 12.4160),
+    (41.8440, 12.4070), (41.8480, 12.3990), (41.8540, 12.3920),
+    # Sud-Ovest
+    (41.8610, 12.3860), (41.8690, 12.3810), (41.8780, 12.3770),
+    (41.8870, 12.3750), (41.8960, 12.3740), (41.9050, 12.3750),
+    # Ovest
+    (41.9140, 12.3770), (41.9230, 12.3800), (41.9310, 12.3840),
+    (41.9390, 12.3880), (41.9460, 12.3900), (41.9530, 12.3910),
+    (41.9610, 12.3920), (41.9690, 12.3930), (41.9760, 12.3940),
+    (41.9800, 12.3950),
+]
+
+
+def punto_dentro_gra(lat: float, lng: float) -> bool:
+    """
+    Ray casting algorithm — restituisce True se il punto (lat,lng)
+    è dentro il poligono del GRA.
+    """
+    n = len(GRA_POLYGON)
+    inside = False
+    x, y = lng, lat
+    j = n - 1
+    for i in range(n):
+        xi, yi = GRA_POLYGON[i][1], GRA_POLYGON[i][0]
+        xj, yj = GRA_POLYGON[j][1], GRA_POLYGON[j][0]
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def geocodifica_indirizzo(indirizzo: str):
+    """Converte un indirizzo in coordinate lat/lng usando Google Geocoding API"""
+    try:
+        import requests as rq
+        r = rq.get("https://maps.googleapis.com/maps/api/geocode/json", params={
+            "address": indirizzo,
+            "key": GMAPS_KEY,
+            "language": "it",
+            "region": "it"
+        }, timeout=10)
+        data = r.json()
+        if data.get("status") == "OK":
+            loc = data["results"][0]["geometry"]["location"]
+            return loc["lat"], loc["lng"]
+    except Exception as e:
+        app.logger.error(f"Geocoding: {e}")
+    return None, None
+
+
+def calcola_preventivo(indirizzo_cliente, cap_cliente=""):
     try:
         import requests as rq
         tar = get_tariffe()
+
+        # ── Step 1: geocodifica l'indirizzo e controlla se è dentro il GRA ──
+        lat, lng = geocodifica_indirizzo(indirizzo_cliente)
+        if lat is not None and lng is not None:
+            if punto_dentro_gra(lat, lng):
+                return {
+                    "zona": "inside_gra",
+                    "costo_min": tar["dentro_uscita"],
+                    "testo": f"Zona Roma (dentro GRA) — uscita + 1h: EUR {tar['dentro_uscita']:.2f} + IVA",
+                    "dist_label": "Dentro il GRA",
+                    "dur_label": "—"
+                }
+
+        # ── Step 2: fuori GRA — calcola distanza e costo trasferta ──────────
         r = rq.get("https://maps.googleapis.com/maps/api/distancematrix/json", params={
             "origins": SEDE, "destinations": indirizzo_cliente,
             "mode": "driving", "key": GMAPS_KEY, "language": "it"
@@ -152,14 +234,6 @@ def calcola_preventivo(indirizzo_cliente):
         if el.get("status") != "OK": return None
         dist_km = el["distance"]["value"] / 1000
         dur_h   = el["duration"]["value"] / 3600
-        if dist_km < 10:
-            return {
-                "zona": "inside_gra",
-                "costo_min": tar["dentro_uscita"],
-                "testo": f"Zona Roma (dentro GRA) — uscita + 1h: EUR {tar['dentro_uscita']:.2f} + IVA",
-                "dist_label": el["distance"]["text"],
-                "dur_label":  el["duration"]["text"]
-            }
         dist_ar  = dist_km * 2
         dur_ar   = math.ceil(dur_h * 2)
         costo_km = dist_ar * tar["fuori_km"]
