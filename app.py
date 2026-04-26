@@ -2,14 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 WEB APP - Assistenza Tecnica Macchinari
-Rotondi Group Roma
+Rotondi Group Roma — v2
 """
 
-import os, sqlite3, uuid, math, smtplib, json
+import os, sqlite3, uuid, math, smtplib, json, base64
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, session, redirect
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "rotondi-secret-2024")
@@ -24,6 +26,12 @@ SMTP_P      = os.environ.get("SMTP_PASS","")
 SMTP_F      = os.environ.get("SMTP_FROM","")
 SMTP_H      = os.environ.get("SMTP_HOST","smtp.gmail.com")
 SMTP_PO     = int(os.environ.get("SMTP_PORT","587"))
+# Email a cui arrivano le notifiche per i tecnici (reply-to)
+TECNICI_EMAIL = os.environ.get("TECNICI_EMAIL","")
+BASE_URL    = os.environ.get("BASE_URL","http://localhost:5000")
+
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 TARIFFE_DEFAULT = {
     "dentro_uscita": 80.0,
@@ -88,11 +96,13 @@ def init_db():
                 fascia     TEXT,
                 data       TEXT,
                 lingua     TEXT DEFAULT 'it',
-                preventivo TEXT
+                preventivo TEXT,
+                foto_paths TEXT
             )
         """)
+        # Migrazioni colonne mancanti
         for col in ["via TEXT","civico TEXT","cap TEXT","citta TEXT","provincia TEXT",
-                    "seriale TEXT","email TEXT","preventivo TEXT"]:
+                    "seriale TEXT","email TEXT","preventivo TEXT","foto_paths TEXT"]:
             try: conn.execute(f"ALTER TABLE richieste_web ADD COLUMN {col}")
             except: pass
         conn.execute("""
@@ -176,10 +186,26 @@ def invia_telegram(testo, keyboard=None):
         import requests as rq
         payload = {"chat_id": TECNICI_GID, "text": testo, "parse_mode": "Markdown"}
         if keyboard: payload["reply_markup"] = json.dumps(keyboard)
-        rq.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        r = rq.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                 json=payload, timeout=10)
+        return r.json()
     except Exception as e:
         app.logger.error(f"TG: {e}")
+        return None
+
+
+def invia_telegram_foto(foto_path, caption=""):
+    """Invia una singola foto al gruppo Telegram"""
+    try:
+        import requests as rq
+        if not os.path.exists(foto_path):
+            return
+        with open(foto_path, "rb") as f:
+            rq.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                    data={"chat_id": TECNICI_GID, "caption": caption[:1024]},
+                    files={"photo": f}, timeout=30)
+    except Exception as e:
+        app.logger.error(f"TG foto: {e}")
 
 
 def invia_email_cliente(email, nome, protocollo, lingua="it"):
@@ -216,14 +242,206 @@ def invia_email_cliente(email, nome, protocollo, lingua="it"):
         with smtplib.SMTP(SMTP_H, SMTP_PO) as s:
             s.starttls(); s.login(SMTP_U, SMTP_P); s.sendmail(SMTP_F, email, msg.as_string())
     except Exception as e:
-        app.logger.error(f"Email: {e}")
+        app.logger.error(f"Email cliente: {e}")
 
+
+def invia_email_tecnico(dati, protocollo, prev_text="", foto_paths=None):
+    """
+    Invia email di notifica ai tecnici con tutti i dati della richiesta.
+    Il tecnico può rispondere direttamente per confermare la presa in carico.
+    """
+    if not (TECNICI_EMAIL and SMTP_U and SMTP_P):
+        return
+    
+    indirizzo = dati.get("indirizzo", "")
+    link_maps = "https://www.google.com/maps/search/?api=1&query=" + indirizzo.replace(" ", "+")
+    
+    # Link per assegnazione rapida via web admin
+    link_admin = f"{BASE_URL}/admin"
+    
+    soggetto = f"[NUOVA RICHIESTA] #{protocollo} — {dati.get('marca','')} — {dati.get('citta','')} ({dati.get('provincia','')})"
+    
+    corpo_html = f"""
+<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#f5f5f5;padding:20px">
+  <div style="background:#0d0d14;padding:20px 24px;border-radius:8px 8px 0 0;text-align:center">
+    <h1 style="color:#fff;font-size:20px;margin:0;letter-spacing:1px">ROTONDI GROUP ROMA</h1>
+    <p style="color:#aaa;margin:4px 0 0;font-size:12px">Nuova Richiesta di Assistenza</p>
+  </div>
+  <div style="background:#fff;padding:28px;border-radius:0 0 8px 8px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+
+    <div style="background:#fff8e1;border-left:4px solid #ff9800;padding:12px 16px;border-radius:4px;margin-bottom:20px">
+      <p style="margin:0;font-size:13px;color:#e65100;font-weight:700">⚡ NUOVA RICHIESTA — RISPONDERE A QUESTA EMAIL PER PRENDERE IN CARICO</p>
+    </div>
+
+    <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+      <tr>
+        <td style="padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;width:40%;border-radius:4px">🔖 Protocollo</td>
+        <td style="padding:8px 12px;font-size:14px;font-weight:700;color:#0d0d14;letter-spacing:1px">{protocollo}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;border-radius:4px">👤 Cliente</td>
+        <td style="padding:8px 12px;font-size:14px">{dati.get('nome','')}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;border-radius:4px">📞 Telefono</td>
+        <td style="padding:8px 12px;font-size:14px"><a href="tel:{dati.get('telefono','')}" style="color:#0d0d14;font-weight:700">{dati.get('telefono','')}</a></td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;border-radius:4px">📧 Email cliente</td>
+        <td style="padding:8px 12px;font-size:14px">{dati.get('email','') or '—'}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;border-radius:4px">📍 Indirizzo</td>
+        <td style="padding:8px 12px;font-size:14px">{indirizzo}<br>
+          <a href="{link_maps}" style="color:#1565c0;font-size:12px">🗺 Apri su Google Maps</a></td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;border-radius:4px">🏷 Marca</td>
+        <td style="padding:8px 12px;font-size:14px">{dati.get('marca','')}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;border-radius:4px">⚙️ Modello</td>
+        <td style="padding:8px 12px;font-size:14px">{dati.get('modello','') or '—'}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;border-radius:4px">🔢 Seriale</td>
+        <td style="padding:8px 12px;font-size:14px">{dati.get('seriale','') or '—'}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;border-radius:4px;vertical-align:top">🔧 Problema</td>
+        <td style="padding:8px 12px;font-size:14px;color:#333">{dati.get('problema','')}</td>
+      </tr>
+      {"<tr><td style='padding:8px 12px;background:#f8f8f8;font-weight:700;font-size:13px;border-radius:4px'>💰 Preventivo</td><td style='padding:8px 12px;font-size:14px'>"+prev_text+"</td></tr>" if prev_text else ""}
+    </table>
+
+    <div style="background:#e8f5e9;border-radius:8px;padding:16px;margin:16px 0;border:1px solid #c8e6c9">
+      <p style="margin:0 0 8px;font-weight:700;font-size:14px;color:#2e7d32">📋 COME PRENDERE IN CARICO:</p>
+      <p style="margin:0;font-size:13px;color:#333;line-height:1.8">
+        1. <b>Rispondi a questa email</b> con il tuo nome e la fascia oraria proposta<br>
+        2. Oppure accedi al pannello admin: <a href="{link_admin}" style="color:#1565c0">{link_admin}</a><br>
+        3. Contatta direttamente il cliente: <a href="tel:{dati.get('telefono','')}" style="color:#0d0d14"><b>{dati.get('telefono','')}</b></a>
+      </p>
+    </div>
+
+    {"<p style='font-size:13px;color:#666;margin-top:16px'>📸 Foto allegate a questa email (" + str(len(foto_paths)) + " immagini)</p>" if foto_paths else ""}
+
+    <p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #f0f0f0;padding-top:12px">
+      Rotondi Group Roma — Via di Sant'Alessandro 349, Roma<br>
+      Tel: +39 06 41400617
+    </p>
+  </div>
+</div>"""
+
+    try:
+        msg = MIMEMultipart("mixed")
+        msg["Subject"] = soggetto
+        msg["From"] = SMTP_F
+        msg["To"] = TECNICI_EMAIL
+        # Reply-To punta alla casella tecnici (così rispondere → tecnici)
+        msg["Reply-To"] = TECNICI_EMAIL
+        
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(corpo_html, "html"))
+        msg.attach(alt)
+        
+        # Allega le foto se presenti
+        if foto_paths:
+            for fp in foto_paths:
+                if fp and os.path.exists(fp):
+                    with open(fp, "rb") as f:
+                        part = MIMEBase("image", "jpeg")
+                        part.set_payload(f.read())
+                        encoders.encode_base64(part)
+                        fname = os.path.basename(fp)
+                        part.add_header("Content-Disposition", f"attachment; filename={fname}")
+                        msg.attach(part)
+        
+        with smtplib.SMTP(SMTP_H, SMTP_PO) as s:
+            s.starttls()
+            s.login(SMTP_U, SMTP_P)
+            s.sendmail(SMTP_F, TECNICI_EMAIL, msg.as_string())
+    except Exception as e:
+        app.logger.error(f"Email tecnico: {e}")
+
+
+# ─── TELEGRAM WEBHOOK ────────────────────────────────────────────────────────
+
+@app.route("/webhook/telegram", methods=["POST"])
+def telegram_webhook():
+    """
+    Riceve i callback_query da Telegram quando un tecnico preme un bottone fascia.
+    Aggiorna il DB e risponde con un messaggio di conferma.
+    """
+    try:
+        update = request.get_json(force=True)
+        if not update:
+            return "ok"
+
+        cb = update.get("callback_query")
+        if not cb:
+            return "ok"
+
+        cb_id   = cb["id"]
+        cb_data = cb.get("data","")
+        from_user = cb.get("from",{})
+        tecnico_nome = from_user.get("first_name","") + (" " + from_user.get("last_name","") if from_user.get("last_name") else "")
+
+        # Formato atteso: wfascia|PROTOCOLLO|FASCIA
+        parts = cb_data.split("|")
+        if len(parts) == 3 and parts[0] == "wfascia":
+            _, protocollo, fascia = parts
+
+            FASCE = {
+                "entro12":  "🕛 Entro le 12:00",
+                "entro18":  "🕕 Entro le 18:00",
+                "giornata": "📅 In giornata",
+                "domani":   "📆 Entro domani",
+                "programma":"🗓 Da programmare",
+            }
+            fascia_label = FASCE.get(fascia, fascia)
+
+            # Aggiorna DB
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("""
+                    UPDATE richieste_web
+                    SET stato='assegnata', tecnico=?, fascia=?
+                    WHERE protocollo=?
+                """, (tecnico_nome, fascia_label, protocollo))
+                conn.commit()
+
+            # Risponde al callback (rimuove la rotellina di caricamento su Telegram)
+            try:
+                import requests as rq
+                rq.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                        json={"callback_query_id": cb_id,
+                              "text": f"✅ Preso in carico da {tecnico_nome}"},
+                        timeout=5)
+
+                # Modifica il messaggio originale togliendo i bottoni e aggiungendo la conferma
+                msg_id   = cb.get("message",{}).get("message_id")
+                chat_id  = cb.get("message",{}).get("chat",{}).get("id")
+                old_text = cb.get("message",{}).get("text","")
+                new_text = old_text + f"\n\n✅ *Assegnata a {tecnico_nome}* — {fascia_label}"
+                if msg_id and chat_id:
+                    rq.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
+                            json={"chat_id": chat_id, "message_id": msg_id,
+                                  "text": new_text, "parse_mode": "Markdown"},
+                            timeout=5)
+            except Exception as e2:
+                app.logger.error(f"TG answer: {e2}")
+
+        return "ok"
+    except Exception as e:
+        app.logger.error(f"Webhook: {e}")
+        return "ok"
+
+
+# ─── ROUTES ──────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
     cond_it = get_config("condizioni_it", CONDIZIONI_IT_DEFAULT)
     cond_en = get_config("condizioni_en", CONDIZIONI_EN_DEFAULT)
-    # FIX: passa le condizioni come variabili separate, senza tojson nel template
     return render_template_string(HTML_FORM,
                                   condizioni_it=cond_it,
                                   condizioni_en=cond_en)
@@ -241,10 +459,20 @@ def route_preventivo():
 
 @app.route("/invia", methods=["POST"])
 def route_invia():
+    """
+    Riceve form dati (multipart) con possibili foto allegate.
+    """
     try:
-        data = request.get_json(force=True)
-        # FIX protocollo: niente underscore, solo alfanumerico
+        # Supporta sia JSON che multipart/form-data
+        if request.content_type and "multipart" in request.content_type:
+            data = request.form.to_dict()
+            files = request.files.getlist("foto")
+        else:
+            data = request.get_json(force=True)
+            files = []
+
         protocollo = "RG" + datetime.now().strftime("%Y%m%d%H%M%S") + uuid.uuid4().hex[:4].upper()
+
         via       = data.get("via","").strip()
         civico    = data.get("civico","").strip()
         cap       = data.get("cap","").strip()
@@ -254,34 +482,48 @@ def route_invia():
         lingua    = data.get("lingua","it")
         prev_json = data.get("preventivo")
 
+        # Salva foto
+        foto_paths = []
+        for i, f in enumerate(files):
+            if f and f.filename:
+                ext = os.path.splitext(f.filename)[1].lower() or ".jpg"
+                if ext not in [".jpg",".jpeg",".png",".gif",".webp",".heic"]:
+                    continue
+                fname = f"{protocollo}_foto{i+1}{ext}"
+                fpath = os.path.join(UPLOAD_FOLDER, fname)
+                f.save(fpath)
+                foto_paths.append(fpath)
+
+        foto_json = json.dumps(foto_paths) if foto_paths else None
+
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 INSERT INTO richieste_web
                 (protocollo,nome,via,civico,cap,citta,provincia,indirizzo,
-                 telefono,email,marca,modello,seriale,problema,data,lingua,preventivo)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 telefono,email,marca,modello,seriale,problema,data,lingua,preventivo,foto_paths)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (protocollo,
                   data.get("nome",""), via, civico, cap, citta, provincia, indirizzo,
                   data.get("telefono",""), data.get("email",""),
                   data.get("marca",""), data.get("modello",""),
                   data.get("seriale",""), data.get("problema",""),
-                  datetime.now().strftime("%d/%m/%Y %H:%M"), lingua, prev_json))
+                  datetime.now().strftime("%d/%m/%Y %H:%M"), lingua, prev_json, foto_json))
             conn.commit()
 
+        # Testo preventivo
         prev_text = ""
         if prev_json:
             try:
                 prev = json.loads(prev_json)
                 if prev.get("zona") == "outside_gra":
-                    prev_text = f"\n💰 *Preventivo:* EUR {prev['costo_min']:.2f} + IVA ({prev.get('dist_label','')} — {prev.get('dur_label','')})"
+                    prev_text = f"EUR {prev['costo_min']:.2f} + IVA ({prev.get('dist_label','')} — {prev.get('dur_label','')})"
                 else:
-                    prev_text = f"\n💰 *Zona Roma (GRA):* EUR {prev.get('costo_min',80):.2f} + IVA"
+                    prev_text = f"Zona Roma (GRA): EUR {prev.get('costo_min',80):.2f} + IVA"
             except: pass
 
+        prev_tg = (f"\n💰 *Preventivo:* {prev_text}") if prev_text else ""
         link_maps = "https://www.google.com/maps/search/?api=1&query=" + indirizzo.replace(" ","+")
 
-        # FIX callback_data: usa PIPE come separatore invece di underscore
-        # così il protocollo (che non ha pipe) non rompe lo split
         keyboard = {"inline_keyboard": [
             [{"text":"🕛 Entro le 12:00","callback_data":f"wfascia|{protocollo}|entro12"},
              {"text":"🕕 Entro le 18:00","callback_data":f"wfascia|{protocollo}|entro18"}],
@@ -290,6 +532,7 @@ def route_invia():
             [{"text":"🗓 Da programmare","callback_data":f"wfascia|{protocollo}|programma"}],
         ]}
         FLAG = {"it":"🇮🇹","en":"🇬🇧","bn":"🇧🇩","zh":"🇨🇳","ar":"🇸🇦"}.get(lingua,"🌍")
+        foto_nota = f"\n📸 *Foto:* {len(foto_paths)} immagini allegate" if foto_paths else ""
         testo = (
             f"🌐 *NUOVA RICHIESTA WEB* {FLAG}\n{'─'*30}\n"
             f"🔖 *Protocollo:* `{protocollo}`\n"
@@ -301,16 +544,53 @@ def route_invia():
             f"🏷 *Marca:* {data.get('marca','')} | *Modello:* {data.get('modello','') or '—'}\n"
             f"🔢 *Seriale:* {data.get('seriale','') or '—'}\n"
             f"🔧 *Problema:* {data.get('problema','')}"
-            f"{prev_text}\n{'─'*30}\n"
+            f"{prev_tg}{foto_nota}\n{'─'*30}\n"
             f"⏰ Primo tecnico disponibile:"
         )
+
+        # Invia messaggio principale con bottoni fascia
         invia_telegram(testo, keyboard)
+
+        # Invia le foto come messaggi separati
+        for i, fp in enumerate(foto_paths):
+            invia_telegram_foto(fp, caption=f"📸 Foto {i+1}/{len(foto_paths)} — {protocollo}")
+
+        # Email al cliente
         invia_email_cliente(data.get("email",""), data.get("nome",""), protocollo, lingua)
+
+        # Email ai tecnici con tutti i dati + foto allegate
+        invia_email_tecnico(
+            dati={
+                "nome": data.get("nome",""),
+                "email": data.get("email",""),
+                "telefono": data.get("telefono",""),
+                "indirizzo": indirizzo,
+                "via": via, "civico": civico, "cap": cap,
+                "citta": citta, "provincia": provincia,
+                "marca": data.get("marca",""),
+                "modello": data.get("modello",""),
+                "seriale": data.get("seriale",""),
+                "problema": data.get("problema",""),
+            },
+            protocollo=protocollo,
+            prev_text=prev_text,
+            foto_paths=foto_paths
+        )
+
         return jsonify({"protocollo": protocollo, "ok": True})
 
     except Exception as e:
         app.logger.error(f"Errore /invia: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/uploads/<filename>")
+def serve_upload(filename):
+    """Serve le foto caricate (solo admin autenticato)"""
+    if not session.get("admin"):
+        return "Accesso negato", 403
+    from flask import send_from_directory
+    return send_from_directory(UPLOAD_FOLDER, filename)
 
 
 @app.route("/admin", methods=["GET","POST"])
@@ -340,7 +620,7 @@ def admin():
     cond_en = get_config("condizioni_en", CONDIZIONI_EN_DEFAULT)
     with sqlite3.connect(DB_PATH) as conn:
         richieste = conn.execute("""
-            SELECT protocollo,nome,indirizzo,telefono,marca,problema,stato,tecnico,fascia,data,lingua
+            SELECT protocollo,nome,indirizzo,telefono,marca,problema,stato,tecnico,fascia,data,lingua,foto_paths
             FROM richieste_web ORDER BY id DESC LIMIT 50
         """).fetchall()
     return render_template_string(HTML_ADMIN,
@@ -362,12 +642,30 @@ def admin_sblocca(protocollo):
     return redirect("/admin")
 
 
+@app.route("/admin/assegna/<protocollo>", methods=["POST"])
+def admin_assegna(protocollo):
+    """Assegna manualmente dal pannello admin"""
+    if not session.get("admin"): return redirect("/admin")
+    tecnico = request.form.get("tecnico","").strip()
+    fascia  = request.form.get("fascia","").strip()
+    if tecnico and fascia:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("""
+                UPDATE richieste_web SET stato='assegnata', tecnico=?, fascia=?
+                WHERE protocollo=?
+            """, (tecnico, fascia, protocollo))
+            conn.commit()
+    return redirect("/admin")
+
+
 @app.route("/health")
 def health():
     return "OK", 200
 
 
-HTML_FORM = """<!DOCTYPE html>
+# ─── TEMPLATES ────────────────────────────────────────────────────────────────
+
+HTML_FORM = r"""<!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8">
@@ -416,6 +714,7 @@ textarea{resize:vertical;min-height:80px}
 .prev-outside .prev-importo{color:#e65100}
 .prev-detail{font-size:12px;color:#666;margin-top:4px}
 .prev-nota{font-size:11px;color:#999;margin-top:6px}
+.prev-disclaimer{font-size:11px;color:#e65100;margin-top:4px;font-style:italic}
 .chk-row{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px}
 .chk-row input[type=checkbox]{width:18px;height:18px;margin-top:2px;flex-shrink:0;cursor:pointer}
 .chk-row label{font-size:13px;color:#444;font-weight:400;cursor:pointer}
@@ -431,6 +730,21 @@ textarea{resize:vertical;min-height:80px}
 .ok-proto{font-size:24px;font-weight:700;color:#0d0d14;background:#f0f0f0;
   padding:10px 24px;border-radius:8px;display:inline-block;margin:14px 0;letter-spacing:2px}
 .ok-box p{font-size:14px;color:#555;line-height:1.7}
+/* Upload foto */
+.foto-area{border:2px dashed #ddd;border-radius:10px;padding:20px;text-align:center;
+  cursor:pointer;transition:border-color .2s;background:#fafafa;position:relative}
+.foto-area:hover{border-color:#0d0d14}
+.foto-area input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.foto-icon{font-size:32px;margin-bottom:8px}
+.foto-area p{font-size:13px;color:#666;margin:0}
+.foto-area small{font-size:11px;color:#aaa}
+.foto-preview{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.foto-thumb{position:relative;width:80px;height:80px;border-radius:8px;overflow:hidden;border:1.5px solid #ddd}
+.foto-thumb img{width:100%;height:100%;object-fit:cover}
+.foto-thumb .rm{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.7);
+  color:#fff;border:none;border-radius:50%;width:20px;height:20px;
+  font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
+.foto-count{font-size:12px;color:#666;margin-top:8px}
 </style>
 </head>
 <body>
@@ -528,6 +842,7 @@ Conservazione: max 2 anni. Diritti: accesso, rettifica, cancellazione.</div>
         <div class="prev-importo" id="prev_imp"></div>
         <p class="prev-detail" id="prev_det"></p>
         <p class="prev-nota" id="t_prev_nota">Preventivo indicativo per 1h di lavoro + IVA</p>
+        <p class="prev-disclaimer" id="t_prev_disclaimer">⚠️ Preventivo indicativo — escluse parti di ricambio</p>
       </div>
     </div>
     <button class="btn" onclick="goStep3()" id="btn2">Continua &#8594;</button>
@@ -547,8 +862,22 @@ Conservazione: max 2 anni. Diritti: accesso, rettifica, cancellazione.</div>
       <div class="field"><label id="t_seriale">Numero Seriale</label>
         <input id="seriale" type="text" placeholder="Dalla targhetta"></div>
       <div class="field"><label id="t_prob">Descrivi il Problema *</label>
-        <textarea id="problema" placeholder="Cosa succede? Da quando? Hai gia provato qualcosa?"></textarea></div>
+        <textarea id="problema" placeholder="Cosa succede? Da quando? Hai già provato qualcosa?"></textarea></div>
     </div>
+
+    <!-- UPLOAD FOTO -->
+    <div class="card">
+      <h2 id="t_foto_h">&#128247; Foto (opzionale)</h2>
+      <div class="foto-area" onclick="triggerFoto()" id="foto_drop">
+        <input type="file" id="foto_input" accept="image/*" multiple onchange="onFotoChange(this)">
+        <div class="foto-icon">&#128247;</div>
+        <p id="t_foto_desc">Aggiungi foto della macchina e del problema</p>
+        <small id="t_foto_hint">Max 5 foto — JPG, PNG, HEIC</small>
+      </div>
+      <div class="foto-preview" id="foto_preview"></div>
+      <p class="foto-count" id="foto_count"></p>
+    </div>
+
     <button class="btn" onclick="invia()" id="btn3">&#128228; Invia Richiesta</button>
     <button class="btn-sec" onclick="goStep2back()" id="t_back2">&#8592; Indietro</button>
   </div>
@@ -566,9 +895,9 @@ Conservazione: max 2 anni. Diritti: accesso, rettifica, cancellazione.</div>
 </div>
 
 <script>
-var lang='it', prevData=null;
-var COND_IT = """ + json.dumps(CONDIZIONI_IT_DEFAULT) + """;
-var COND_EN = """ + json.dumps(CONDIZIONI_EN_DEFAULT) + """;
+var lang='it', prevData=null, fotoFiles=[];
+var COND_IT = """ + json.dumps(CONDIZIONI_IT_DEFAULT) + r""";
+var COND_EN = """ + json.dumps(CONDIZIONI_EN_DEFAULT) + r""";
 
 var L={
   it:{gdpr_h:'Privacy (GDPR)',gdpr_lbl:'Accetto il trattamento dei dati personali ai sensi del GDPR',
@@ -578,9 +907,14 @@ var L={
     citta:'Citt\u00e0 *',prov:'Provincia *',btn_calc:'Verifica distanza e preventivo',
     calc_lbl:'Calcolo in corso...',prev_h:'Preventivo Indicativo',
     prev_nota:'Preventivo indicativo per 1h di lavoro + IVA',
+    prev_disclaimer:'\u26a0\ufe0f Preventivo indicativo \u2014 escluse parti di ricambio',
     inside:'Zona Roma (dentro GRA)',outside:'Fuori Roma',
     mac_h:'Dati Macchina',marca:'Marca *',modello:'Modello',seriale:'Numero Seriale',
-    prob:'Descrivi il Problema *',btn1:'Continua \u2192',btn2:'Continua \u2192',
+    prob:'Descrivi il Problema *',
+    foto_h:'Foto (opzionale)',
+    foto_desc:'Aggiungi foto della macchina e del problema',
+    foto_hint:'Max 5 foto \u2014 JPG, PNG, HEIC',
+    btn1:'Continua \u2192',btn2:'Continua \u2192',
     btn3:'Invia Richiesta',back1:'\u2190 Indietro',back2:'\u2190 Indietro',
     ok_h:'Richiesta Inviata!',
     ok_p:'Un tecnico Rotondi Group Roma ti contatter\u00e0 a breve.<br><br>Per annullare urgentemente:<br><strong>+39 06 41 40 0514</strong>',
@@ -593,9 +927,14 @@ var L={
     citta:'City *',prov:'Province *',btn_calc:'Check distance & quote',
     calc_lbl:'Calculating...',prev_h:'Indicative Quote',
     prev_nota:'Indicative quote for 1h work + VAT',
+    prev_disclaimer:'\u26a0\ufe0f Indicative quote \u2014 spare parts not included',
     inside:'Rome area (inside GRA)',outside:'Outside Rome',
     mac_h:'Machine Details',marca:'Brand *',modello:'Model',seriale:'Serial Number',
-    prob:'Describe the Problem *',btn1:'Continue \u2192',btn2:'Continue \u2192',
+    prob:'Describe the Problem *',
+    foto_h:'Photos (optional)',
+    foto_desc:'Add photos of the machine and the problem',
+    foto_hint:'Max 5 photos \u2014 JPG, PNG, HEIC',
+    btn1:'Continue \u2192',btn2:'Continue \u2192',
     btn3:'Send Request',back1:'\u2190 Back',back2:'\u2190 Back',
     ok_h:'Request Sent!',
     ok_p:'A Rotondi Group Roma technician will contact you shortly.<br><br>To cancel urgently:<br><strong>+39 06 41 40 0514</strong>',
@@ -607,9 +946,12 @@ var L={
     ind_h:'ঠিকানা',via:'রাস্তা *',civico:'নম্বর *',cap:'পোস্টাল কোড *',
     citta:'শহর *',prov:'প্রদেশ *',btn_calc:'দূরত্ব যাচাই',calc_lbl:'হিসাব...',
     prev_h:'আনুমানিক খরচ',prev_nota:'১ ঘণ্টার আনুমানিক + ভ্যাট',
+    prev_disclaimer:'\u26a0\ufe0f আনুমানিক \u2014 স্পেয়ার পার্টস ছাড়া',
     inside:'রোমা (GRA ভেতরে)',outside:'রোমার বাইরে',
     mac_h:'মেশিন',marca:'ব্র্যান্ড *',modello:'মডেল',seriale:'সিরিয়াল',
-    prob:'সমস্যা বর্ণনা *',btn1:'এগিয়ে যান \u2192',btn2:'এগিয়ে যান \u2192',
+    prob:'সমস্যা বর্ণনা *',
+    foto_h:'ছবি (ঐচ্ছিক)',foto_desc:'মেশিন ও সমস্যার ছবি যোগ করুন',foto_hint:'সর্বোচ্চ ৫টি ছবি',
+    btn1:'এগিয়ে যান \u2192',btn2:'এগিয়ে যান \u2192',
     btn3:'পাঠান',back1:'\u2190 পেছনে',back2:'\u2190 পেছনে',
     ok_h:'অনুরোধ পাঠানো হয়েছে!',
     ok_p:'টেকনিশিয়ান শীঘ্রই যোগাযোগ করবেন।<br><br>বাতিল: <strong>+39 06 41 40 0514</strong>',
@@ -620,9 +962,12 @@ var L={
     ind_h:'服务地址',via:'街道 *',civico:'门牌号 *',cap:'邮政编码 *',
     citta:'城市 *',prov:'省份代码 *',btn_calc:'验证距离',calc_lbl:'计算中...',
     prev_h:'参考报价',prev_nota:'1小时工作参考报价 + 增值税',
+    prev_disclaimer:'\u26a0\ufe0f 参考报价 \u2014 不含零件费用',
     inside:'罗马市区（GRA内）',outside:'罗马市外',
     mac_h:'机器信息',marca:'品牌 *',modello:'型号',seriale:'序列号',
-    prob:'描述问题 *',btn1:'继续 \u2192',btn2:'继续 \u2192',
+    prob:'描述问题 *',
+    foto_h:'照片（可选）',foto_desc:'上传机器和故障照片',foto_hint:'最多5张',
+    btn1:'继续 \u2192',btn2:'继续 \u2192',
     btn3:'发送',back1:'\u2190 返回',back2:'\u2190 返回',
     ok_h:'请求已发送！',
     ok_p:'技术人员将很快联系您。<br><br>取消: <strong>+39 06 41 40 0514</strong>',
@@ -633,9 +978,12 @@ var L={
     ind_h:'عنوان الخدمة',via:'الشارع *',civico:'رقم المبنى *',cap:'الرمز البريدي *',
     citta:'المدينة *',prov:'رمز المحافظة *',btn_calc:'تحقق من المسافة',calc_lbl:'جارٍ الحساب...',
     prev_h:'عرض سعر تقريبي',prev_nota:'تقريبي لساعة عمل + ضريبة',
+    prev_disclaimer:'\u26a0\ufe0f تقريبي \u2014 لا يشمل قطع الغيار',
     inside:'منطقة روما (داخل GRA)',outside:'خارج روما',
     mac_h:'بيانات الجهاز',marca:'الماركة *',modello:'الموديل',seriale:'الرقم التسلسلي',
-    prob:'صف المشكلة *',btn1:'متابعة \u2192',btn2:'متابعة \u2192',
+    prob:'صف المشكلة *',
+    foto_h:'صور (اختياري)',foto_desc:'أضف صور الجهاز والمشكلة',foto_hint:'5 صور كحد أقصى',
+    btn1:'متابعة \u2192',btn2:'متابعة \u2192',
     btn3:'إرسال',back1:'\u2190 رجوع',back2:'\u2190 رجوع',
     ok_h:'تم إرسال الطلب!',
     ok_p:'سيتصل بك فني قريباً.<br><br>للإلغاء: <strong>+39 06 41 40 0514</strong>',
@@ -652,9 +1000,10 @@ function setLang(l){
     't_dati_h':'dati_h','t_nome':'nome','t_email':'email','t_tel':'tel',
     't_ind_h':'ind_h','t_via':'via','t_civico':'civico','t_cap':'cap',
     't_citta':'citta','t_prov':'prov','t_calc_lbl':'calc_lbl',
-    't_prev_h':'prev_h','t_prev_nota':'prev_nota',
+    't_prev_h':'prev_h','t_prev_nota':'prev_nota','t_prev_disclaimer':'prev_disclaimer',
     't_mac_h':'mac_h','t_marca':'marca','t_modello':'modello',
     't_seriale':'seriale','t_prob':'prob',
+    't_foto_h':'foto_h','t_foto_desc':'foto_desc','t_foto_hint':'foto_hint',
     'btn1':'btn1','btn2':'btn2','btn3':'btn3','t_back1':'back1','t_back2':'back2'
   };
   for(var id in map){
@@ -662,11 +1011,42 @@ function setLang(l){
     if(el) el.textContent=t[map[id]];
   }
   document.getElementById('btn_calc').textContent=t.btn_calc;
-  // Aggiorna condizioni nella lingua selezionata
   if(l==='it') document.getElementById('cond_box').textContent=COND_IT;
   else if(l==='en') document.getElementById('cond_box').textContent=COND_EN;
 }
 
+/* ---- FOTO ---- */
+function triggerFoto(){
+  // già gestito dall'input sovrapposto
+}
+function onFotoChange(input){
+  var newFiles=Array.from(input.files);
+  for(var i=0;i<newFiles.length;i++){
+    if(fotoFiles.length>=5) break;
+    fotoFiles.push(newFiles[i]);
+  }
+  input.value=''; // reset per permettere ri-selezione stessa foto
+  renderFoto();
+}
+function removeFoto(idx){
+  fotoFiles.splice(idx,1);
+  renderFoto();
+}
+function renderFoto(){
+  var preview=document.getElementById('foto_preview');
+  var count=document.getElementById('foto_count');
+  preview.innerHTML='';
+  fotoFiles.forEach(function(f,i){
+    var url=URL.createObjectURL(f);
+    var div=document.createElement('div');
+    div.className='foto-thumb';
+    div.innerHTML='<img src="'+url+'" alt="foto '+i+'"><button class="rm" onclick="removeFoto('+i+')">&#215;</button>';
+    preview.appendChild(div);
+  });
+  count.textContent=fotoFiles.length>0?fotoFiles.length+' foto selezionat'+(fotoFiles.length===1?'a':'e'):'';
+}
+
+/* ---- STEPS ---- */
 function updSteps(n){
   for(var i=1;i<=3;i++){
     var s=document.getElementById('s'+i);
@@ -743,11 +1123,14 @@ function calcolaPreventivo(){
     }
     document.getElementById('t_prev_h').textContent=t.prev_h;
     document.getElementById('t_prev_nota').textContent=t.prev_nota;
+    document.getElementById('t_prev_disclaimer').textContent=t.prev_disclaimer;
     box.style.display='block';
   }).catch(function(){
     document.getElementById('loading_p').style.display='none';
   });
 }
+
+/* ---- INVIA (multipart con foto) ---- */
 function invia(){
   var f=['nome','telefono','marca','problema'];
   for(var i=0;i<f.length;i++){
@@ -756,26 +1139,25 @@ function invia(){
   var btn=document.getElementById('btn3');
   btn.disabled=true;
   btn.textContent='\u23f3 Invio in corso...';
-  var payload={
-    nome:document.getElementById('nome').value.trim(),
-    email:document.getElementById('email').value.trim(),
-    telefono:document.getElementById('telefono').value.trim(),
-    via:document.getElementById('via').value.trim(),
-    civico:document.getElementById('civico').value.trim(),
-    cap:document.getElementById('cap').value.trim(),
-    citta:document.getElementById('citta').value.trim(),
-    provincia:document.getElementById('provincia').value.trim().toUpperCase(),
-    indirizzo:buildInd(),
-    marca:document.getElementById('marca').value.trim(),
-    modello:document.getElementById('modello').value.trim(),
-    seriale:document.getElementById('seriale').value.trim(),
-    problema:document.getElementById('problema').value.trim(),
-    lingua:lang,
-    preventivo:prevData?JSON.stringify(prevData):null
-  };
-  fetch('/invia',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(payload)})
+
+  var fd=new FormData();
+  fd.append('nome',document.getElementById('nome').value.trim());
+  fd.append('email',document.getElementById('email').value.trim());
+  fd.append('telefono',document.getElementById('telefono').value.trim());
+  fd.append('via',document.getElementById('via').value.trim());
+  fd.append('civico',document.getElementById('civico').value.trim());
+  fd.append('cap',document.getElementById('cap').value.trim());
+  fd.append('citta',document.getElementById('citta').value.trim());
+  fd.append('provincia',document.getElementById('provincia').value.trim().toUpperCase());
+  fd.append('marca',document.getElementById('marca').value.trim());
+  fd.append('modello',document.getElementById('modello').value.trim());
+  fd.append('seriale',document.getElementById('seriale').value.trim());
+  fd.append('problema',document.getElementById('problema').value.trim());
+  fd.append('lingua',lang);
+  if(prevData) fd.append('preventivo',JSON.stringify(prevData));
+  fotoFiles.forEach(function(f){ fd.append('foto',f); });
+
+  fetch('/invia',{method:'POST', body:fd})
   .then(function(r){return r.json();})
   .then(function(data){
     if(data.protocollo){
@@ -791,7 +1173,7 @@ function invia(){
       btn.textContent=L[lang].btn3;
       alert('Errore invio. Riprova.');
     }
-  }).catch(function(e){
+  }).catch(function(){
     btn.disabled=false;
     btn.textContent=L[lang].btn3;
     alert('Errore di connessione. Riprova.');
@@ -838,7 +1220,7 @@ body{font-family:Arial,sans-serif;background:#f0f0f0;color:#222}
 .topbar h1{font-size:18px}
 .topbar a{color:#aaa;font-size:13px;text-decoration:none}
 .topbar a:hover{color:#fff}
-.container{max-width:960px;margin:24px auto;padding:0 16px 60px}
+.container{max-width:1100px;margin:24px auto;padding:0 16px 60px}
 .card{background:#fff;border-radius:10px;padding:24px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,.07)}
 .card h2{font-size:16px;font-weight:700;color:#0d0d14;margin-bottom:18px;border-bottom:2px solid #f0f0f0;padding-bottom:10px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -850,17 +1232,32 @@ input:focus,textarea:focus{border-color:#0d0d14}
 textarea{resize:vertical;min-height:120px;font-family:monospace;font-size:12px}
 .btn{background:#0d0d14;color:#fff;border:none;padding:12px 28px;border-radius:8px;font-size:14px;cursor:pointer;font-weight:700}
 .btn:hover{opacity:.88}
+.btn-sm{background:#0d0d14;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600}
+.btn-sm:hover{opacity:.85}
 .msg{background:#e8f5e9;color:#2e7d32;padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;font-weight:600}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th{background:#f5f5f5;padding:10px 8px;text-align:left;font-weight:600;color:#555;border-bottom:2px solid #eee}
-td{padding:9px 8px;border-bottom:1px solid #f0f0f0;vertical-align:top}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#f5f5f5;padding:10px 8px;text-align:left;font-weight:600;color:#555;border-bottom:2px solid #eee;white-space:nowrap}
+td{padding:8px 8px;border-bottom:1px solid #f0f0f0;vertical-align:top}
 tr:hover td{background:#fafafa}
 .badge{display:inline-block;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700}
 .b-open{background:#fff3cd;color:#856404}
 .b-ass{background:#d4edda;color:#155724}
 a.sblocca{color:#e53935;font-size:12px;text-decoration:none}
 a.sblocca:hover{text-decoration:underline}
-</style></head>
+.foto-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.foto-row a img{width:50px;height:50px;object-fit:cover;border-radius:4px;border:1px solid #ddd}
+/* Modal assegna */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;align-items:center;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:#fff;border-radius:12px;padding:28px;width:340px;max-width:96vw}
+.modal h3{font-size:16px;font-weight:700;margin-bottom:18px;color:#0d0d14}
+.modal select,.modal input{width:100%;padding:10px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:12px;outline:none}
+.modal select:focus,.modal input:focus{border-color:#0d0d14}
+.modal .row{display:flex;gap:10px;margin-top:4px}
+.modal .row button{flex:1}
+.btn-cancel{background:#eee;color:#333;border:none;padding:10px;border-radius:8px;font-size:14px;cursor:pointer}
+</style>
+</head>
 <body>
 <div class="topbar">
   <h1>Admin — Rotondi Group Roma</h1>
@@ -907,26 +1304,40 @@ a.sblocca:hover{text-decoration:underline}
     <table>
       <tr>
         <th>Protocollo</th><th>Cliente</th><th>Indirizzo</th><th>Tel</th>
-        <th>Marca</th><th>Problema</th><th>Stato</th><th>Tecnico</th><th>Data</th><th></th>
+        <th>Marca/Modello</th><th>Problema</th><th>Stato</th><th>Tecnico</th><th>Fascia</th><th>Data</th><th>Foto</th><th>Azioni</th>
       </tr>
       {% for r in richieste %}
       <tr>
         <td><code style="font-size:11px">{{ r[0] }}</code></td>
-        <td>{{ r[1] }}</td>
-        <td style="font-size:12px">{{ r[2] }}</td>
-        <td>{{ r[3] }}</td>
-        <td>{{ r[4] }}</td>
-        <td style="max-width:140px;font-size:12px">{{ (r[5] or '')[:50] }}{% if r[5] and r[5]|length > 50 %}...{% endif %}</td>
+        <td style="white-space:nowrap">{{ r[1] }}</td>
+        <td style="font-size:11px;min-width:140px">{{ r[2] }}</td>
+        <td style="white-space:nowrap"><a href="tel:{{ r[3] }}" style="color:#0d0d14">{{ r[3] }}</a></td>
+        <td style="font-size:12px">{{ r[4] }}<br><span style="color:#888">{{ r[10] or '' }}</span></td>
+        <td style="max-width:140px;font-size:11px">{{ (r[5] or '')[:60] }}{% if r[5] and r[5]|length > 60 %}...{% endif %}</td>
         <td>
           {% if r[6]=='aperta' %}<span class="badge b-open">aperta</span>
           {% elif r[6]=='assegnata' %}<span class="badge b-ass">assegnata</span>
           {% else %}<span class="badge" style="background:#d1ecf1;color:#0c5460">{{ r[6] }}</span>{% endif %}
         </td>
-        <td style="font-size:12px">{{ r[7] or '—' }}<br><small>{{ r[8] or '' }}</small></td>
-        <td style="font-size:12px">{{ r[9] }}</td>
+        <td style="font-size:12px">{{ r[7] or '—' }}</td>
+        <td style="font-size:11px;white-space:nowrap">{{ r[8] or '—' }}</td>
+        <td style="font-size:11px;white-space:nowrap">{{ r[9] }}</td>
         <td>
+          {% if r[11] %}
+            {% set foto_list = r[11] | tojson %}
+            <div class="foto-row">
+            {% for fp in r[11] | from_json %}
+              <a href="/uploads/{{ fp.split('/')[-1] }}" target="_blank">
+                <img src="/uploads/{{ fp.split('/')[-1] }}" alt="foto">
+              </a>
+            {% endfor %}
+            </div>
+          {% else %}—{% endif %}
+        </td>
+        <td style="white-space:nowrap">
+          <button class="btn-sm" onclick="openAssegna('{{ r[0] }}','{{ r[7] or '' }}','{{ r[8] or '' }}')">Assegna</button>
           {% if r[6] != 'aperta' %}
-          <a href="/admin/sblocca/{{ r[0] }}" class="sblocca"
+          &nbsp;<a href="/admin/sblocca/{{ r[0] }}" class="sblocca"
              onclick="return confirm('Sbloccare questa richiesta?')">Sblocca</a>
           {% endif %}
         </td>
@@ -936,7 +1347,53 @@ a.sblocca:hover{text-decoration:underline}
     </div>
   </div>
 </div>
+
+<!-- Modal assegna -->
+<div class="modal-bg" id="modal_bg">
+  <div class="modal">
+    <h3>&#128221; Assegna Richiesta</h3>
+    <form method="POST" id="form_assegna">
+      <input type="text" name="tecnico" id="m_tecnico" placeholder="Nome tecnico *" required>
+      <select name="fascia" id="m_fascia">
+        <option value="🕛 Entro le 12:00">🕛 Entro le 12:00</option>
+        <option value="🕕 Entro le 18:00">🕕 Entro le 18:00</option>
+        <option value="📅 In giornata">📅 In giornata</option>
+        <option value="📆 Entro domani">📆 Entro domani</option>
+        <option value="🗓 Da programmare">🗓 Da programmare</option>
+      </select>
+      <div class="row">
+        <button type="submit" class="btn">Salva</button>
+        <button type="button" class="btn-cancel" onclick="closeModal()">Annulla</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function openAssegna(proto, tecnico, fascia){
+  document.getElementById('form_assegna').action='/admin/assegna/'+proto;
+  document.getElementById('m_tecnico').value=tecnico||'';
+  var sel=document.getElementById('m_fascia');
+  if(fascia){
+    for(var i=0;i<sel.options.length;i++){
+      if(sel.options[i].value===fascia){sel.selectedIndex=i;break;}
+    }
+  }
+  document.getElementById('modal_bg').classList.add('open');
+}
+function closeModal(){
+  document.getElementById('modal_bg').classList.remove('open');
+}
+document.getElementById('modal_bg').addEventListener('click',function(e){
+  if(e.target===this) closeModal();
+});
+</script>
 </body></html>"""
+
+
+# Filtro Jinja per from_json
+import json as _json
+app.jinja_env.filters['from_json'] = lambda s: _json.loads(s) if s else []
 
 
 init_db()
