@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 WEB APP - Assistenza Tecnica Macchinari
-Rotondi Group Roma — v2
+Rotondi Group Roma — v3
 """
 
 import os, sqlite3, uuid, math, smtplib, json, base64, threading
@@ -31,6 +31,8 @@ TECNICI_EMAIL = os.environ.get("TECNICI_EMAIL","")
 # Email ufficio messa in CC su ogni assegnazione (può coincidere con TECNICI_EMAIL)
 UFFICIO_EMAIL = os.environ.get("UFFICIO_EMAIL","")
 BASE_URL    = os.environ.get("BASE_URL","http://localhost:5000")
+# SendGrid API key — usata al posto di SMTP (Railway blocca le porte SMTP)
+SENDGRID_KEY = os.environ.get("SENDGRID_KEY","")
 
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -284,18 +286,77 @@ def invia_telegram_foto(foto_path, caption=""):
         app.logger.error(f"TG foto: {e}")
 
 
-def _smtp_send(msg_obj, destinatario):
-    """Gestisce porta 465 SSL e 587 TLS automaticamente"""
-    if SMTP_PO == 465:
-        import ssl
-        with smtplib.SMTP_SSL(SMTP_H, SMTP_PO, context=ssl.create_default_context()) as s:
-            s.login(SMTP_U, SMTP_P)
-            s.sendmail(SMTP_F, destinatario, msg_obj.as_string())
+def _invia_email(destinatario: str, soggetto: str, corpo_html: str,
+                  allegati: list = None, reply_to: str = ""):
+    """
+    Invia email tramite SendGrid API (HTTPS porta 443 — funziona su Railway).
+    Fallback su SMTP se SENDGRID_KEY non è impostata.
+    """
+    if SENDGRID_KEY:
+        # ── SendGrid via HTTPS ────────────────────────────────────────────
+        try:
+            import requests as rq
+            mittente = SMTP_F or TECNICI_EMAIL or "noreply@rotondigroup.it"
+            payload = {
+                "personalizations": [{"to": [{"email": destinatario}]}],
+                "from": {"email": mittente, "name": "Rotondi Group Roma"},
+                "subject": soggetto,
+                "content": [{"type": "text/html", "value": corpo_html}],
+            }
+            if reply_to:
+                payload["reply_to"] = {"email": reply_to}
+            # Allegati base64
+            if allegati:
+                payload["attachments"] = []
+                for fp in allegati:
+                    if fp and os.path.exists(fp):
+                        with open(fp, "rb") as f:
+                            data_b64 = base64.b64encode(f.read()).decode()
+                        payload["attachments"].append({
+                            "content": data_b64,
+                            "filename": os.path.basename(fp),
+                            "type": "image/jpeg",
+                            "disposition": "attachment"
+                        })
+            r = rq.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {SENDGRID_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=15
+            )
+            if r.status_code in (200, 202):
+                app.logger.info(f"Email SendGrid OK → {destinatario}")
+            else:
+                app.logger.error(f"Email SendGrid errore {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            app.logger.error(f"Email SendGrid eccezione: {e}")
     else:
-        with smtplib.SMTP(SMTP_H, SMTP_PO) as s:
-            s.starttls()
-            s.login(SMTP_U, SMTP_P)
-            s.sendmail(SMTP_F, destinatario, msg_obj.as_string())
+        # ── Fallback SMTP (locale/dev) ────────────────────────────────────
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = soggetto
+            msg["From"]    = SMTP_F
+            msg["To"]      = destinatario
+            if reply_to:
+                msg["Reply-To"] = reply_to
+            msg.attach(MIMEText(corpo_html, "html"))
+            if SMTP_PO == 465:
+                import ssl
+                with smtplib.SMTP_SSL(SMTP_H, SMTP_PO,
+                                       context=ssl.create_default_context()) as s:
+                    s.login(SMTP_U, SMTP_P)
+                    s.sendmail(SMTP_F, destinatario, msg.as_string())
+            else:
+                with smtplib.SMTP(SMTP_H, SMTP_PO) as s:
+                    s.starttls()
+                    s.login(SMTP_U, SMTP_P)
+                    s.sendmail(SMTP_F, destinatario, msg.as_string())
+            app.logger.info(f"Email SMTP OK → {destinatario}")
+        except Exception as e:
+            app.logger.error(f"Email SMTP: {e}")
 
 
 def invia_email_cliente(email, nome, protocollo, lingua="it"):
@@ -329,7 +390,7 @@ def invia_email_cliente(email, nome, protocollo, lingua="it"):
         msg = MIMEMultipart("alternative")
         msg["Subject"] = soggetto; msg["From"] = SMTP_F; msg["To"] = email
         msg.attach(MIMEText(corpo, "html"))
-        _smtp_send(msg, email)
+        _invia_email(email, soggetto, corpo)
     except Exception as e:
         app.logger.error(f"Email cliente: {e}")
 
@@ -422,25 +483,13 @@ def invia_email_tecnico(dati, protocollo, prev_text="", foto_paths=None):
 </div>"""
 
     try:
-        msg = MIMEMultipart("mixed")
-        msg["Subject"] = soggetto
-        msg["From"]    = SMTP_F
-        msg["To"]      = TECNICI_EMAIL
-        msg["Reply-To"] = TECNICI_EMAIL
-        alt = MIMEMultipart("alternative")
-        alt.attach(MIMEText(corpo_html, "html"))
-        msg.attach(alt)
-        if foto_paths:
-            for fp in foto_paths:
-                if fp and os.path.exists(fp):
-                    with open(fp, "rb") as f:
-                        part = MIMEBase("image", "jpeg")
-                        part.set_payload(f.read())
-                        encoders.encode_base64(part)
-                        fname = os.path.basename(fp)
-                        part.add_header("Content-Disposition", f"attachment; filename={fname}")
-                        msg.attach(part)
-        _smtp_send(msg, TECNICI_EMAIL)
+        _invia_email(
+            destinatario=TECNICI_EMAIL,
+            soggetto=soggetto,
+            corpo_html=corpo_html,
+            allegati=foto_paths,
+            reply_to=TECNICI_EMAIL
+        )
     except Exception as e:
         app.logger.error(f"Email tecnico: {e}")
 
@@ -623,12 +672,7 @@ def invia_email_assegnazione(protocollo, tecnico_nome, fascia_label):
             else:
                 sogg_uff = soggetto
 
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = sogg_uff
-            msg["From"]    = SMTP_F
-            msg["To"]      = dest
-            msg.attach(MIMEText(corpo_html, "html"))
-            _smtp_send(msg, dest)
+            _invia_email(dest, sogg_uff, corpo_html)
             app.logger.info(f"Email assegnazione inviata a {tipo} ({dest}) — {protocollo}")
         except Exception as e:
             app.logger.error(f"Email assegnazione {tipo} ({dest}): {e}")
