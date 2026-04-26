@@ -850,16 +850,18 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f2f2f2;min-height:100vh
         <span id="t_gdpr_lbl">
           Accetto il trattamento dei dati personali ai sensi del GDPR
         </span>
-      </label>
+            </label>
     </div>
 
     <div class="card">
       <h2>&#128203; <span id="t_cond_h">Condizioni del Servizio</span></h2>
       <div class="cond-box" id="cond_box">{{ cond_it }}</div>
-      <label class="chk-row">
-        <input type="checkbox" id="c_cond">
-        <span id="t_cond_lbl">Accetto le condizioni del servizio</span>
-      </label>
+      <div class="chk-row">
+        <input type="checkbox" id="c_cond" onclick="this.checked=!this.checked">
+        <span id="t_cond_lbl" onclick="document.getElementById('c_cond').click()">
+          Accetto le condizioni del servizio
+        </span>
+      </div>
     </div>
     <button class="btn-main" onclick="goStep2()" id="btn1">
       Continua &#8594;
