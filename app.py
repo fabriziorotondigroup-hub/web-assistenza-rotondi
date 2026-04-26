@@ -5,7 +5,7 @@ WEB APP - Assistenza Tecnica Macchinari
 Rotondi Group Roma — v2
 """
 
-import os, sqlite3, uuid, math, smtplib, json, base64
+import os, sqlite3, uuid, math, smtplib, json, base64, threading
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, session, redirect
 from email.mime.text import MIMEText
@@ -603,11 +603,12 @@ def telegram_webhook():
                 """, (tecnico_nome, fascia_label, protocollo))
                 conn.commit()
 
-            # ✉️ Manda email al cliente + ufficio con tecnico e preventivo
-            try:
-                invia_email_assegnazione(protocollo, tecnico_nome, fascia_label)
-            except Exception as em:
-                app.logger.error(f"Email assegnazione da TG: {em}")
+            # ✉️ Manda email al cliente + ufficio in background
+            _p = protocollo; _t = tecnico_nome; _f = fascia_label
+            threading.Thread(
+                target=lambda: invia_email_assegnazione(_p, _t, _f),
+                daemon=True
+            ).start()
 
             # Risponde al callback (rimuove la rotellina di caricamento su Telegram)
             try:
@@ -748,34 +749,38 @@ def route_invia():
             f"⏰ Primo tecnico disponibile:"
         )
 
-        # Invia messaggio principale con bottoni fascia
-        invia_telegram(testo, keyboard)
+        # ── Tutte le notifiche in background: risposta immediata al cliente ──
+        _lingua    = lingua
+        _proto     = protocollo
+        _prev_text = prev_text
+        _foto      = list(foto_paths)
+        _testo     = testo
+        _keyboard  = keyboard
+        _dati = {
+            "nome":      data.get("nome",""),
+            "email":     data.get("email",""),
+            "telefono":  data.get("telefono",""),
+            "indirizzo": indirizzo,
+            "via": via, "civico": civico, "cap": cap,
+            "citta": citta, "provincia": provincia,
+            "marca":    data.get("marca",""),
+            "modello":  data.get("modello",""),
+            "seriale":  data.get("seriale",""),
+            "problema": data.get("problema",""),
+        }
 
-        # Invia le foto come messaggi separati
-        for i, fp in enumerate(foto_paths):
-            invia_telegram_foto(fp, caption=f"📸 Foto {i+1}/{len(foto_paths)} — {protocollo}")
+        def _invia_tutto():
+            try:
+                invia_telegram(_testo, _keyboard)
+                for i, fp in enumerate(_foto):
+                    invia_telegram_foto(fp, caption=f"📸 Foto {i+1}/{len(_foto)} — {_proto}")
+                invia_email_cliente(_dati["email"], _dati["nome"], _proto, _lingua)
+                invia_email_tecnico(dati=_dati, protocollo=_proto,
+                                    prev_text=_prev_text, foto_paths=_foto)
+            except Exception as ex:
+                app.logger.error(f"Background notifica: {ex}")
 
-        # Email al cliente
-        invia_email_cliente(data.get("email",""), data.get("nome",""), protocollo, lingua)
-
-        # Email ai tecnici con tutti i dati + foto allegate
-        invia_email_tecnico(
-            dati={
-                "nome": data.get("nome",""),
-                "email": data.get("email",""),
-                "telefono": data.get("telefono",""),
-                "indirizzo": indirizzo,
-                "via": via, "civico": civico, "cap": cap,
-                "citta": citta, "provincia": provincia,
-                "marca": data.get("marca",""),
-                "modello": data.get("modello",""),
-                "seriale": data.get("seriale",""),
-                "problema": data.get("problema",""),
-            },
-            protocollo=protocollo,
-            prev_text=prev_text,
-            foto_paths=foto_paths
-        )
+        threading.Thread(target=_invia_tutto, daemon=True).start()
 
         return jsonify({"protocollo": protocollo, "ok": True})
 
@@ -855,11 +860,12 @@ def admin_assegna(protocollo):
                 WHERE protocollo=?
             """, (tecnico, fascia, protocollo))
             conn.commit()
-        # ✉️ Stessa email che parte dal webhook Telegram
-        try:
-            invia_email_assegnazione(protocollo, tecnico, fascia)
-        except Exception as e:
-            app.logger.error(f"Email assegnazione da admin: {e}")
+        # ✉️ Stessa email in background
+        _p = protocollo; _t = tecnico; _f = fascia
+        threading.Thread(
+            target=lambda: invia_email_assegnazione(_p, _t, _f),
+            daemon=True
+        ).start()
     return redirect("/admin")
 
 
