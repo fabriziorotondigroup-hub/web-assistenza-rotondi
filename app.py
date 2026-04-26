@@ -210,6 +210,20 @@ def invia_telegram_foto(foto_path, caption=""):
         app.logger.error(f"TG foto: {e}")
 
 
+def _smtp_send(msg_obj, destinatario):
+    """Gestisce porta 465 SSL e 587 TLS automaticamente"""
+    if SMTP_PO == 465:
+        import ssl
+        with smtplib.SMTP_SSL(SMTP_H, SMTP_PO, context=ssl.create_default_context()) as s:
+            s.login(SMTP_U, SMTP_P)
+            s.sendmail(SMTP_F, destinatario, msg_obj.as_string())
+    else:
+        with smtplib.SMTP(SMTP_H, SMTP_PO) as s:
+            s.starttls()
+            s.login(SMTP_U, SMTP_P)
+            s.sendmail(SMTP_F, destinatario, msg_obj.as_string())
+
+
 def invia_email_cliente(email, nome, protocollo, lingua="it"):
     if not (email and SMTP_U and SMTP_P): return
     soggetto = {
@@ -241,8 +255,7 @@ def invia_email_cliente(email, nome, protocollo, lingua="it"):
         msg = MIMEMultipart("alternative")
         msg["Subject"] = soggetto; msg["From"] = SMTP_F; msg["To"] = email
         msg.attach(MIMEText(corpo, "html"))
-        with smtplib.SMTP(SMTP_H, SMTP_PO) as s:
-            s.starttls(); s.login(SMTP_U, SMTP_P); s.sendmail(SMTP_F, email, msg.as_string())
+        _smtp_send(msg, email)
     except Exception as e:
         app.logger.error(f"Email cliente: {e}")
 
@@ -337,16 +350,12 @@ def invia_email_tecnico(dati, protocollo, prev_text="", foto_paths=None):
     try:
         msg = MIMEMultipart("mixed")
         msg["Subject"] = soggetto
-        msg["From"] = SMTP_F
-        msg["To"] = TECNICI_EMAIL
-        # Reply-To punta alla casella tecnici (così rispondere → tecnici)
+        msg["From"]    = SMTP_F
+        msg["To"]      = TECNICI_EMAIL
         msg["Reply-To"] = TECNICI_EMAIL
-        
         alt = MIMEMultipart("alternative")
         alt.attach(MIMEText(corpo_html, "html"))
         msg.attach(alt)
-        
-        # Allega le foto se presenti
         if foto_paths:
             for fp in foto_paths:
                 if fp and os.path.exists(fp):
@@ -357,11 +366,7 @@ def invia_email_tecnico(dati, protocollo, prev_text="", foto_paths=None):
                         fname = os.path.basename(fp)
                         part.add_header("Content-Disposition", f"attachment; filename={fname}")
                         msg.attach(part)
-        
-        with smtplib.SMTP(SMTP_H, SMTP_PO) as s:
-            s.starttls()
-            s.login(SMTP_U, SMTP_P)
-            s.sendmail(SMTP_F, TECNICI_EMAIL, msg.as_string())
+        _smtp_send(msg, TECNICI_EMAIL)
     except Exception as e:
         app.logger.error(f"Email tecnico: {e}")
 
@@ -549,10 +554,7 @@ def invia_email_assegnazione(protocollo, tecnico_nome, fascia_label):
             msg["From"]    = SMTP_F
             msg["To"]      = dest
             msg.attach(MIMEText(corpo_html, "html"))
-            with smtplib.SMTP(SMTP_H, SMTP_PO) as s:
-                s.starttls()
-                s.login(SMTP_U, SMTP_P)
-                s.sendmail(SMTP_F, dest, msg.as_string())
+            _smtp_send(msg, dest)
             app.logger.info(f"Email assegnazione inviata a {tipo} ({dest}) — {protocollo}")
         except Exception as e:
             app.logger.error(f"Email assegnazione {tipo} ({dest}): {e}")
