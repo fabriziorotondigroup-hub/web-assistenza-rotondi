@@ -28,6 +28,8 @@ SMTP_H      = os.environ.get("SMTP_HOST","smtp.gmail.com")
 SMTP_PO     = int(os.environ.get("SMTP_PORT","587"))
 # Email a cui arrivano le notifiche per i tecnici (reply-to)
 TECNICI_EMAIL = os.environ.get("TECNICI_EMAIL","")
+# Email ufficio messa in CC su ogni assegnazione (può coincidere con TECNICI_EMAIL)
+UFFICIO_EMAIL = os.environ.get("UFFICIO_EMAIL","")
 BASE_URL    = os.environ.get("BASE_URL","http://localhost:5000")
 
 UPLOAD_FOLDER = "uploads"
@@ -364,6 +366,198 @@ def invia_email_tecnico(dati, protocollo, prev_text="", foto_paths=None):
         app.logger.error(f"Email tecnico: {e}")
 
 
+def invia_email_assegnazione(protocollo, tecnico_nome, fascia_label):
+    """
+    Chiamata dopo che un tecnico ha preso in carico (da Telegram o da admin).
+    Manda email al CLIENTE con nome tecnico + preventivo in grassetto.
+    Manda CC all'UFFICIO così sanno chi ha preso la chiamata.
+    """
+    if not (SMTP_U and SMTP_P):
+        app.logger.warning("SMTP non configurato — email assegnazione saltata")
+        return
+
+    # Legge tutti i dati della richiesta dal DB
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("""
+            SELECT nome, email, telefono, indirizzo, marca, modello,
+                   seriale, problema, preventivo, lingua, protocollo
+            FROM richieste_web WHERE protocollo=?
+        """, (protocollo,)).fetchone()
+
+    if not row:
+        app.logger.error(f"Assegnazione email: protocollo {protocollo} non trovato")
+        return
+
+    (nome, email_cliente, telefono, indirizzo,
+     marca, modello, seriale, problema,
+     prev_json, lingua, proto) = row
+
+    # ── Costruisce il blocco preventivo ──────────────────────────────────────
+    prev_html = ""
+    prev_plain = ""
+    if prev_json:
+        try:
+            prev = json.loads(prev_json)
+            if prev.get("zona") == "inside_gra":
+                importo = f"EUR {prev.get('costo_min', 80):.2f} + IVA"
+                zona_txt = "Zona Roma (dentro GRA) — uscita + 1h lavoro"
+            else:
+                importo = f"EUR {prev.get('costo_min', 0):.2f} + IVA (minimo)"
+                zona_txt = f"Fuori Roma — {prev.get('dist_label','')} ({prev.get('dur_label','')})"
+
+            prev_html = f"""
+<div style="background:#fff8e1;border:2px solid #ff9800;border-radius:10px;padding:20px;margin:20px 0">
+  <p style="margin:0 0 6px;font-size:13px;color:#e65100;font-weight:700;text-transform:uppercase;letter-spacing:.5px">
+    💰 Preventivo Indicativo di Spesa
+  </p>
+  <p style="margin:0 0 4px;font-size:13px;color:#555">{zona_txt}</p>
+  <p style="margin:8px 0 4px;font-size:28px;font-weight:900;color:#bf360c;letter-spacing:1px">
+    <strong>{importo}</strong>
+  </p>
+  <p style="margin:8px 0 0;font-size:12px;color:#e65100;font-style:italic;border-top:1px solid #ffe082;padding-top:8px">
+    ⚠️ <strong>Preventivo indicativo per manodopera e trasferta — escluse parti di ricambio.</strong><br>
+    Il costo finale potrà variare in base alla durata effettiva dell'intervento.
+  </p>
+</div>"""
+            prev_plain = f"PREVENTIVO INDICATIVO: {importo} ({zona_txt})\n⚠ Escluse parti di ricambio — costo finale può variare."
+        except Exception as e:
+            app.logger.error(f"Parsing preventivo: {e}")
+
+    if not prev_html:
+        prev_html = """
+<div style="background:#f8f8f8;border-radius:8px;padding:14px;margin:16px 0;border:1px solid #ddd">
+  <p style="margin:0;font-size:13px;color:#555">
+    💰 Il tecnico le fornirà il preventivo dettagliato al momento dell'intervento.<br>
+    <span style="color:#e65100;font-weight:700">⚠️ Escluse parti di ricambio.</span>
+  </p>
+</div>"""
+
+    # ── Testi multilingua ─────────────────────────────────────────────────────
+    TESTI = {
+        "it": {
+            "soggetto": f"Rotondi Group Roma — Intervento confermato #{protocollo}",
+            "titolo": "Intervento Confermato",
+            "saluto": f"Gentile <b>{nome}</b>,",
+            "intro": "La sua richiesta di assistenza è stata presa in carico.",
+            "tecnico_label": "Tecnico assegnato",
+            "fascia_label": "Fascia di intervento",
+            "contatto": "Il tecnico la contatterà per confermare l'orario esatto.",
+            "annulla": "Per annullare urgentemente:",
+            "ufficio": "Ufficio Roma:",
+        },
+        "en": {
+            "soggetto": f"Rotondi Group Roma — Appointment confirmed #{protocollo}",
+            "titolo": "Appointment Confirmed",
+            "saluto": f"Dear <b>{nome}</b>,",
+            "intro": "Your assistance request has been taken on board.",
+            "tecnico_label": "Assigned technician",
+            "fascia_label": "Scheduled slot",
+            "contatto": "The technician will contact you to confirm the exact time.",
+            "annulla": "To cancel urgently:",
+            "ufficio": "Rome office:",
+        },
+    }
+    T = TESTI.get(lingua, TESTI["it"])
+    soggetto = T["soggetto"]
+
+    corpo_html = f"""
+<div style="font-family:Arial,sans-serif;max-width:580px;margin:0 auto">
+
+  <!-- HEADER -->
+  <div style="background:#0d0d14;padding:24px;text-align:center;border-radius:10px 10px 0 0">
+    <h1 style="color:#fff;font-size:22px;margin:0;letter-spacing:1px">ROTONDI GROUP ROMA</h1>
+    <p style="color:#aaa;margin:4px 0 0;font-size:13px">Assistenza Tecnica Macchinari</p>
+  </div>
+
+  <!-- BODY -->
+  <div style="background:#fff;padding:32px;border-radius:0 0 10px 10px;border:1px solid #e0e0e0">
+
+    <!-- Banner verde conferma -->
+    <div style="background:#e8f5e9;border-left:5px solid #4caf50;padding:14px 18px;border-radius:6px;margin-bottom:24px">
+      <p style="margin:0;font-size:16px;font-weight:700;color:#2e7d32">✅ {T["titolo"]}</p>
+    </div>
+
+    <p style="font-size:15px;line-height:1.6">{T["saluto"]}</p>
+    <p style="font-size:14px;color:#444;margin:10px 0 20px;line-height:1.7">{T["intro"]}</p>
+
+    <!-- Protocollo -->
+    <div style="background:#f8f8f8;border-radius:8px;padding:14px 18px;margin-bottom:20px;border-left:4px solid #0d0d14">
+      <p style="margin:0 0 4px;font-size:12px;color:#888;text-transform:uppercase;letter-spacing:.5px">Numero Protocollo</p>
+      <p style="font-size:22px;font-weight:900;color:#0d0d14;margin:0;letter-spacing:2px">{protocollo}</p>
+    </div>
+
+    <!-- Tecnico + Fascia -->
+    <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+      <tr>
+        <td style="padding:12px 16px;background:#f0f4ff;border-radius:8px 8px 0 0;width:40%">
+          <p style="margin:0;font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px">{T["tecnico_label"]}</p>
+          <p style="margin:4px 0 0;font-size:20px;font-weight:900;color:#0d0d14">👷 {tecnico_nome}</p>
+        </td>
+        <td style="padding:12px 16px;background:#f0f4ff;border-radius:8px 8px 0 0;border-left:3px solid #fff">
+          <p style="margin:0;font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px">{T["fascia_label"]}</p>
+          <p style="margin:4px 0 0;font-size:16px;font-weight:700;color:#1565c0">{fascia_label}</p>
+        </td>
+      </tr>
+    </table>
+
+    <!-- Preventivo EVIDENZIATO -->
+    {prev_html}
+
+    <!-- Info macchina -->
+    <div style="background:#fafafa;border-radius:8px;padding:14px 18px;margin:16px 0;border:1px solid #eee">
+      <p style="margin:0 0 8px;font-size:12px;color:#888;text-transform:uppercase;letter-spacing:.5px">Riepilogo richiesta</p>
+      <p style="margin:4px 0;font-size:13px"><b>Macchina:</b> {marca} {modello or ''}</p>
+      {"<p style='margin:4px 0;font-size:13px'><b>Seriale:</b> "+seriale+"</p>" if seriale else ""}
+      <p style="margin:4px 0;font-size:13px"><b>Indirizzo:</b> {indirizzo}</p>
+      <p style="margin:4px 0;font-size:13px"><b>Problema:</b> {problema}</p>
+    </div>
+
+    <p style="font-size:13px;color:#555;margin:16px 0">{T["contatto"]}</p>
+
+    <!-- Annulla -->
+    <div style="background:#fff3cd;border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid #ffe082">
+      <p style="margin:0;font-size:13px"><b>{T["annulla"]}</b> <a href="tel:+390641400514" style="color:#0d0d14;font-weight:700">+39 06 41 40 0514</a></p>
+    </div>
+
+    <p style="color:#888;font-size:12px;margin-top:24px;border-top:1px solid #f0f0f0;padding-top:14px">
+      {T["ufficio"]} <a href="tel:+390641400617" style="color:#555">+39 06 41400617</a><br>
+      Rotondi Group Roma — Via di Sant'Alessandro 349, Roma
+    </p>
+  </div>
+</div>"""
+
+    # ── Invio ─────────────────────────────────────────────────────────────────
+    destinatari = []
+    if email_cliente:
+        destinatari.append(("cliente", email_cliente))
+    if UFFICIO_EMAIL:
+        destinatari.append(("ufficio", UFFICIO_EMAIL))
+    # Se UFFICIO_EMAIL non impostato, manda a TECNICI_EMAIL come fallback ufficio
+    elif TECNICI_EMAIL and TECNICI_EMAIL != email_cliente:
+        destinatari.append(("ufficio_fallback", TECNICI_EMAIL))
+
+    for tipo, dest in destinatari:
+        try:
+            # Per l'ufficio aggiungo nel subject chi ha preso in carico
+            if tipo != "cliente":
+                sogg_uff = f"[ASSEGNATA {tecnico_nome}] #{protocollo} — {marca} — {nome}"
+            else:
+                sogg_uff = soggetto
+
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = sogg_uff
+            msg["From"]    = SMTP_F
+            msg["To"]      = dest
+            msg.attach(MIMEText(corpo_html, "html"))
+            with smtplib.SMTP(SMTP_H, SMTP_PO) as s:
+                s.starttls()
+                s.login(SMTP_U, SMTP_P)
+                s.sendmail(SMTP_F, dest, msg.as_string())
+            app.logger.info(f"Email assegnazione inviata a {tipo} ({dest}) — {protocollo}")
+        except Exception as e:
+            app.logger.error(f"Email assegnazione {tipo} ({dest}): {e}")
+
+
 # ─── TELEGRAM WEBHOOK ────────────────────────────────────────────────────────
 
 @app.route("/webhook/telegram", methods=["POST"])
@@ -408,6 +602,12 @@ def telegram_webhook():
                     WHERE protocollo=?
                 """, (tecnico_nome, fascia_label, protocollo))
                 conn.commit()
+
+            # ✉️ Manda email al cliente + ufficio con tecnico e preventivo
+            try:
+                invia_email_assegnazione(protocollo, tecnico_nome, fascia_label)
+            except Exception as em:
+                app.logger.error(f"Email assegnazione da TG: {em}")
 
             # Risponde al callback (rimuove la rotellina di caricamento su Telegram)
             try:
@@ -655,6 +855,11 @@ def admin_assegna(protocollo):
                 WHERE protocollo=?
             """, (tecnico, fascia, protocollo))
             conn.commit()
+        # ✉️ Stessa email che parte dal webhook Telegram
+        try:
+            invia_email_assegnazione(protocollo, tecnico, fascia)
+        except Exception as e:
+            app.logger.error(f"Email assegnazione da admin: {e}")
     return redirect("/admin")
 
 
